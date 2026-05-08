@@ -179,7 +179,8 @@ class MediaService:
 
         youtube_urls = self._extract_youtube_urls(prompt)
         magnets = self._extract_magnets(prompt)
-        metadata = self._extract_music_metadata(prompt)
+        pending = self._latest_pending_youtube_info()
+        metadata = self._extract_music_metadata(prompt, pending)
 
         if not youtube_urls and not magnets and not uploaded_torrents:
             if self._looks_like_status_question(prompt):
@@ -187,7 +188,6 @@ class MediaService:
                 self.add_chat_message("assistant", reply, model=model)
                 return reply
 
-            pending = self._latest_pending_youtube_info()
             if pending:
                 pending_details = self._load_download_details(pending)
                 pending_metadata = pending_details.get("metadata", {})
@@ -390,8 +390,7 @@ class MediaService:
         terms = ("terminou", "baixou", "acabou", "status", "andamento", "download")
         return any(term in normalized for term in terms)
 
-    @staticmethod
-    def _extract_music_metadata(prompt: str) -> dict[str, str]:
+    def _extract_music_metadata(self, prompt: str, pending: DownloadRecord | None = None) -> dict[str, str]:
         metadata: dict[str, str] = {}
         patterns = {
             "artist": r"(?:artista|artist)\s*[:=]\s*([^,\n]+)",
@@ -402,7 +401,53 @@ class MediaService:
             match = re.search(pattern, prompt, flags=re.IGNORECASE)
             if match:
                 metadata[key] = match.group(1).strip()
+
+        if pending and "album" not in metadata:
+            details = self._load_download_details(pending)
+            pending_metadata = details.get("metadata", {})
+            only_missing_album = bool(pending_metadata.get("artist")) and not pending_metadata.get("album")
+            if only_missing_album:
+                album = self._extract_album_from_natural_reply(prompt)
+                if album:
+                    metadata["album"] = album
         return metadata
+
+    @staticmethod
+    def _extract_album_from_natural_reply(prompt: str) -> str | None:
+        text = prompt.strip().strip(".")
+        if not text:
+            return None
+        normalized = text.lower()
+        ignored_replies = (
+            "o resto vc ja tem",
+            "o resto voce ja tem",
+            "o resto você já tem",
+            "vc ja tem",
+            "voce ja tem",
+            "você já tem",
+        )
+        if normalized in ignored_replies or "resto" in normalized:
+            return None
+
+        patterns = (
+            r"^(?:coloca|coloque|salva|salve|usa|use)\s+(?:como|em|no album|no álbum)?\s*(.+)$",
+            r"^(?:o\s+)?(?:album|álbum)\s+(?:e|é|eh|seria|vai ser)\s+(.+)$",
+            r"^(?:pode ser|chama de|nomeia como)\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return MediaService._clean_metadata_value(match.group(1))
+
+        if len(text.split()) <= 6 and not any(marker in text for marker in ("http://", "https://", "magnet:")):
+            return MediaService._clean_metadata_value(text)
+        return None
+
+    @staticmethod
+    def _clean_metadata_value(value: str) -> str:
+        cleaned = value.strip().strip("`'\"")
+        cleaned = re.sub(r"^(?:como|album|álbum)\s+", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip(" .,:;")
 
 
 @st.cache_resource(show_spinner=False)

@@ -21,19 +21,23 @@ if top_right.button("Limpar chat", width="stretch"):
     service.clear_chat()
     st.rerun()
 
-downloads = service.list_downloads()
+@st.fragment(run_every="2s")
+def render_chat_history() -> None:
+    messages = service.list_chat_messages()
+    if not messages:
+        with st.chat_message("assistant"):
+            st.write(
+                "Envie um link do YouTube para extrair audio, cole um magnet, "
+                "ou abra a pagina de downloads para adicionar magnets e arquivos .torrent."
+            )
+        return
 
-messages = service.list_chat_messages()
-if not messages:
-    with st.chat_message("assistant"):
-        st.write(
-            "Envie um link do YouTube para extrair audio, cole um magnet, "
-            "ou abra a pagina de downloads para adicionar magnets e arquivos .torrent."
-        )
-else:
     for message in messages:
         with st.chat_message("assistant" if message["role"] == "assistant" else "user"):
             st.write(message["content"])
+
+
+render_chat_history()
 
 chat_value = st.chat_input(
     "Peça um download, cole um YouTube ou um magnet...",
