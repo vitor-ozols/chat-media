@@ -29,6 +29,7 @@ class MediaService:
         self.torrent_service = TorrentService(ensure_app_paths(root))
 
     def list_chat_messages(self) -> list[dict[str, str | None]]:
+        self._ensure_pending_metadata_prompts()
         return [
             {"role": item.role, "content": item.content, "model": item.model}
             for item in self.db.list_chat_messages()
@@ -188,20 +189,28 @@ class MediaService:
 
             pending = self._latest_pending_youtube_info()
             if pending:
-                if metadata.get("artist") and metadata.get("album"):
-                    resumed = self.youtube.resume_with_metadata(pending.id, metadata)
+                pending_details = self._load_download_details(pending)
+                pending_metadata = pending_details.get("metadata", {})
+                merged_metadata = {**pending_metadata, **metadata}
+                if merged_metadata.get("artist") and merged_metadata.get("album"):
+                    resumed = self.youtube.resume_with_metadata(pending.id, merged_metadata)
                     reply = (
                         "Perfeito, atualizei os metadados e coloquei a musica de volta na fila. "
-                        f"Ela sera organizada em `{self.paths.music_dir / metadata['artist'] / metadata['album']}`. "
+                        f"Ela sera organizada em `{self.paths.music_dir / merged_metadata['artist'] / merged_metadata['album']}`. "
                         "Acompanhe o progresso na aba Downloads."
                     )
                     if resumed is None:
                         reply = "Nao consegui encontrar a musica pendente para retomar."
                     self.add_chat_message("assistant", reply, model=model)
                     return reply
+                missing = []
+                if not merged_metadata.get("artist"):
+                    missing.append("artista")
+                if not merged_metadata.get("album"):
+                    missing.append("album")
                 reply = (
-                    "Preciso dessas informacoes para organizar a musica. "
-                    "Me envie no formato: `artista: Nome, album: Nome, musica: Nome`."
+                    f"Ainda preciso de {' e '.join(missing)} para organizar a musica. "
+                    "Me envie aqui no chat no formato: `artista: Nome, album: Nome, musica: Nome`."
                 )
                 self.add_chat_message("assistant", reply, model=model)
                 return reply
@@ -316,6 +325,25 @@ class MediaService:
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
+
+    def _ensure_pending_metadata_prompts(self) -> None:
+        for item in self.db.list_downloads(limit=50):
+            if item.source_kind != "youtube" or item.status != "needs_info":
+                continue
+            details = self._load_download_details(item)
+            if details.get("metadata_request_sent"):
+                continue
+            metadata = details.get("metadata", {})
+            missing = [field for field in ("artist", "album") if not metadata.get(field)]
+            if not missing:
+                continue
+            details["metadata_request_sent"] = True
+            self.db.upsert_download(item.copy(details_json=json.dumps(details), updated_at=utc_now()))
+            self.db.add_chat_message(
+                "assistant",
+                self.youtube._build_metadata_request_message(item, metadata, missing),
+                model=None,
+            )
 
     @staticmethod
     def _extract_youtube_urls(text: str) -> list[str]:

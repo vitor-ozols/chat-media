@@ -228,10 +228,21 @@ class YouTubeService:
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(record.source_value, download=False)
+                if not info or not isinstance(info, dict):
+                    self.db.upsert_download(
+                        record.copy(
+                            status="error",
+                            error_message="Nao consegui ler os metadados do video.",
+                            updated_at=utc_now(),
+                        )
+                    )
+                    return
                 metadata = self._resolve_metadata(info, override_metadata)
                 missing = [field for field in ("artist", "album") if not metadata.get(field)]
                 if missing:
                     details["metadata"] = metadata
+                    details["metadata_request_sent"] = True
+                    message = self._build_metadata_request_message(record, metadata, missing)
                     self.db.upsert_download(
                         record.copy(
                             display_name=info.get("title") or record.display_name,
@@ -245,6 +256,8 @@ class YouTubeService:
                             updated_at=utc_now(),
                         )
                     )
+                    if not self._load_details(record).get("metadata_request_sent"):
+                        self.db.add_chat_message("assistant", message, model=None)
                     return
 
                 target_dir = self.paths.music_dir / self._sanitize(metadata["artist"]) / self._sanitize(metadata["album"])
@@ -293,11 +306,17 @@ class YouTubeService:
 
     @staticmethod
     def _resolve_metadata(info: dict[str, Any], overrides: dict[str, str]) -> dict[str, str]:
-        return {
+        metadata = {
             "artist": overrides.get("artist") or info.get("artist") or "",
             "album": overrides.get("album") or info.get("album") or "",
             "title": overrides.get("title") or info.get("track") or info.get("title") or "",
         }
+        inferred = YouTubeService._infer_artist_title(metadata["title"])
+        if inferred:
+            artist, title = inferred
+            metadata["artist"] = metadata["artist"] or artist
+            metadata["title"] = overrides.get("title") or info.get("track") or title
+        return metadata
 
     @staticmethod
     def _sanitize(value: str) -> str:
@@ -329,3 +348,38 @@ class YouTubeService:
         if not playlist_id:
             return None
         return f"https://www.youtube.com/playlist?{urlencode({'list': playlist_id})}"
+
+    @staticmethod
+    def _infer_artist_title(title: str) -> tuple[str, str] | None:
+        for separator in (" - ", " – ", " — "):
+            if separator in title:
+                artist, track = title.split(separator, 1)
+                artist = artist.strip()
+                track = track.strip()
+                if artist and track:
+                    return artist, track
+        return None
+
+    @staticmethod
+    def _build_metadata_request_message(
+        record: DownloadRecord,
+        metadata: dict[str, str],
+        missing: list[str],
+    ) -> str:
+        known = []
+        if metadata.get("artist"):
+            known.append(f"artista: `{metadata['artist']}`")
+        if metadata.get("title"):
+            known.append(f"musica: `{metadata['title']}`")
+        known_text = f" Eu consegui inferir {', '.join(known)}." if known else ""
+        missing_labels = {
+            "artist": "artista",
+            "album": "album",
+        }
+        missing_text = " e ".join(missing_labels[field] for field in missing)
+        return (
+            f"Preciso de {missing_text} para organizar `{record.display_name}` em "
+            "`artista/album/musica`." + known_text + "\n\n"
+            "Responda aqui no chat, por exemplo: `album: Nome do album` ou "
+            "`artista: Nome, album: Nome`."
+        )

@@ -111,7 +111,7 @@ with tabs[0]:
                 st.rerun()
             st.progress(float(item.progress), text=f"{item.progress * 100:.1f}%")
             if item.status == "needs_info":
-                st.warning("Informe artista e album no chat para iniciar este download.")
+                st.info("Aguardando metadados no chat para iniciar este download.")
             if item.error_message:
                 st.error(item.error_message)
             if item.status == "error" and item.source_kind in {"youtube", "youtube_playlist"}:
