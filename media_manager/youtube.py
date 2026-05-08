@@ -24,8 +24,13 @@ class YouTubeService:
         self.thread = threading.Thread(target=self._worker_loop, daemon=True, name="youtube-downloads")
         self.thread.start()
 
-    def enqueue(self, url: str, metadata: dict[str, str] | None = None) -> DownloadRecord:
-        if self._looks_like_playlist(url):
+    def enqueue(
+        self,
+        url: str,
+        metadata: dict[str, str] | None = None,
+        treat_as_playlist: bool = False,
+    ) -> DownloadRecord:
+        if treat_as_playlist:
             return self._enqueue_playlist(url, metadata=metadata)
         return self._create_video_job(url, metadata=metadata)
 
@@ -83,6 +88,16 @@ class YouTubeService:
                 playlist_record.copy(
                     status="error",
                     error_message=f"Falha ao ler playlist: {exc}",
+                    updated_at=utc_now(),
+                )
+            )
+            return playlist_record
+
+        if not info or not isinstance(info, dict):
+            self.db.upsert_download(
+                playlist_record.copy(
+                    status="error",
+                    error_message="Nao consegui ler os dados da playlist.",
                     updated_at=utc_now(),
                 )
             )
@@ -290,12 +305,11 @@ class YouTubeService:
         return cleaned.strip(" .") or "Desconhecido"
 
     @staticmethod
-    def _looks_like_playlist(url: str) -> bool:
+    def is_explicit_playlist_url(url: str) -> bool:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
         has_playlist_id = bool(query.get("list"))
-        is_youtube_short_url = parsed.netloc.endswith("youtu.be")
-        return has_playlist_id and ("playlist" in parsed.path.lower() or not is_youtube_short_url)
+        return has_playlist_id and "playlist" in parsed.path.lower()
 
     @staticmethod
     def _normalize_video_url(url: str) -> str:

@@ -40,8 +40,13 @@ class MediaService:
     def get_model_choices(self, api_key: str | None = None) -> list[str]:
         return list_model_choices(api_key)
 
-    def enqueue_youtube(self, url: str, metadata: dict[str, str] | None = None) -> DownloadRecord:
-        return self.youtube.enqueue(url, metadata=metadata)
+    def enqueue_youtube(
+        self,
+        url: str,
+        metadata: dict[str, str] | None = None,
+        treat_as_playlist: bool = False,
+    ) -> DownloadRecord:
+        return self.youtube.enqueue(url, metadata=metadata, treat_as_playlist=treat_as_playlist)
 
     def retry_youtube_download(self, download_id: str) -> DownloadRecord | None:
         record = self.db.get_download(download_id)
@@ -50,7 +55,11 @@ class MediaService:
         details = self._load_download_details(record)
         metadata = details.get("metadata", {})
         if record.source_kind in {"youtube", "youtube_playlist"}:
-            return self.youtube.enqueue(record.source_value, metadata=metadata)
+            return self.youtube.enqueue(
+                record.source_value,
+                metadata=metadata,
+                treat_as_playlist=record.source_kind == "youtube_playlist",
+            )
         return None
 
     def add_torrent_from_magnet(self, magnet: str, api_key: str | None = None, model: str | None = None) -> TorrentRecord:
@@ -198,7 +207,11 @@ class MediaService:
                 return reply
 
         for url in youtube_urls:
-            job = self.enqueue_youtube(url, metadata=metadata)
+            job = self.enqueue_youtube(
+                url,
+                metadata=metadata,
+                treat_as_playlist=self._should_treat_as_playlist(url, prompt),
+            )
             if job.source_kind == "youtube_playlist":
                 action_notes.append(
                     f"Playlist adicionada a fila: {job.display_name} -> {job.target_path}. "
@@ -308,6 +321,21 @@ class MediaService:
     def _extract_youtube_urls(text: str) -> list[str]:
         pattern = r"(https?://(?:www\.)?(?:youtube\.com/(?:watch|playlist)\?[^\s]+|youtu\.be/[^\s]+))"
         return [url.rstrip(".,);]") for url in re.findall(pattern, text or "")]
+
+    def _should_treat_as_playlist(self, url: str, prompt: str) -> bool:
+        if self.youtube.is_explicit_playlist_url(url):
+            return True
+        normalized = prompt.lower()
+        playlist_terms = (
+            "playlist inteira",
+            "playlist toda",
+            "album inteiro",
+            "álbum inteiro",
+            "lista inteira",
+            "baixa a playlist",
+            "baixar a playlist",
+        )
+        return any(term in normalized for term in playlist_terms)
 
     @staticmethod
     def _extract_magnets(text: str) -> list[str]:
