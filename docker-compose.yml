@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    image: chat-media
+    container_name: chat-media
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8501}:8501"
+    environment:
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    volumes:
+      - "${DATA_DIR:-./data}:/app/data"
+      - "${MUSIC_DIR:-./media/music}:/app/media/music"
+      - "${MOVIES_DIR:-./media/movies}:/app/media/movies"
+      - "${DOWNLOADS_DIR:-./downloads}:/app/downloads"

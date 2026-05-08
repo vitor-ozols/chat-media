@@ -1,12 +1,11 @@
-IMAGE ?= chat-media
-CONTAINER ?= chat-media
+IMAGE ?= media-control
+CONTAINER ?= media-control
 PORT ?= 8501
+BASE_PATH ?= media
 DATA_DIR ?= $(CURDIR)/data
-MUSIC_DIR ?= $(CURDIR)/media/music
+MUSIC_DIR ?= /mnt/sata/musics
 MOVIES_DIR ?= $(CURDIR)/media/movies
 DOWNLOADS_DIR ?= $(CURDIR)/downloads
-ENV_FILE ?= $(CURDIR)/.env
-ENV_ARGS = $(if $(wildcard $(ENV_FILE)),--env-file "$(ENV_FILE)",-e GEMINI_API_KEY)
 
 .PHONY: build start stop logs shell remove
 
@@ -15,8 +14,10 @@ build:
 	docker build -t $(IMAGE) .
 
 start: build
-	docker run -d --rm --name $(CONTAINER) -p $(PORT):8501 \
-		$(ENV_ARGS) \
+	-docker rm -f $(CONTAINER)
+	docker run -d --name $(CONTAINER) --restart unless-stopped -p $(PORT):8501 \
+		-e STREAMLIT_SERVER_BASE_URL_PATH="$(BASE_PATH)" \
+		-e GEMINI_API_KEY \
 		-v "$(DATA_DIR):/app/data" \
 		-v "$(MUSIC_DIR):/app/media/music" \
 		-v "$(MOVIES_DIR):/app/media/movies" \
