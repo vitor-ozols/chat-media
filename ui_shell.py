@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import os
-
 import streamlit as st
 
-from media_manager.gemini import DEFAULT_MODEL, DOCUMENTED_CHAT_MODELS
+MODEL_CHOICES = [
+    "codex-mini-latest",
+    "gpt-5",
+    "gpt-5-mini",
+]
+EFFORT_CHOICES = ["low", "medium", "high"]
+SANDBOX_CHOICES = ["read", "write", "full"]
 
 
 def configure_page(
     title: str,
     subtitle: str,
-    sidebar_models: list[str] | None = None,
-    sidebar_label: str = "Modelo",
 ) -> None:
     st.set_page_config(
         page_title=title,
@@ -19,8 +21,8 @@ def configure_page(
         initial_sidebar_state="expanded",
     )
     inject_styles()
-    render_sidebar_model_picker(sidebar_models, sidebar_label)
-    render_hero(title, subtitle)
+    if title or subtitle:
+        render_hero(title, subtitle)
 
 
 def inject_styles() -> None:
@@ -85,32 +87,66 @@ def render_hero(title: str, subtitle: str) -> None:
     )
 
 
-def render_sidebar_model_picker(models: list[str] | None = None, label: str = "Modelo") -> None:
-    st.sidebar.header("Gemini")
-    st.session_state["gemini_api_key"] = os.getenv("GEMINI_API_KEY", "")
-    if st.session_state["gemini_api_key"]:
-        st.sidebar.caption("Usando `GEMINI_API_KEY` do ambiente.")
-    else:
-        st.sidebar.warning("`GEMINI_API_KEY` nao encontrada no ambiente.")
+def render_codex_sidebar(service) -> str:
+    models = service.list_codex_models()
+    model_choices = [item["id"] for item in models] or MODEL_CHOICES
+    default_model = next((item["id"] for item in models if item.get("default")), model_choices[0])
+    st.session_state.setdefault("codex_model", default_model)
+    st.session_state.setdefault("codex_effort", "medium")
+    st.session_state.setdefault("codex_sandbox", "full")
+    st.session_state.setdefault("codex_new_chat", False)
+    threads = service.list_codex_threads(limit=20, model=st.session_state.get("codex_model"))
+    if "codex_thread_id" not in st.session_state:
+        st.session_state["codex_thread_id"] = threads[0]["id"] if threads else None
 
-    choices = models or DOCUMENTED_CHAT_MODELS or [DEFAULT_MODEL]
-    current = st.session_state.get("gemini_model", DEFAULT_MODEL)
-    if current not in choices:
-        current = DEFAULT_MODEL
-    st.session_state["gemini_model"] = st.sidebar.selectbox(
-        label,
-        choices,
-        index=choices.index(current),
-        help="Lista baseada na documentacao oficial e usada como fallback quando a API nao puder listar modelos em tempo real.",
-    )
-    st.sidebar.caption("Modelos de chat/texto documentados pelo Gemini API.")
+    st.sidebar.header("Codex")
+    if st.sidebar.button("Novo chat", width="stretch"):
+        st.session_state["codex_thread_id"] = None
+        st.session_state["codex_new_chat"] = True
+        st.rerun()
+
+    config_tab, history_tab = st.sidebar.tabs(["Config", "Historico"])
+
+    with config_tab:
+        st.selectbox("Modelo", model_choices, key="codex_model")
+        st.selectbox("Effort", EFFORT_CHOICES, key="codex_effort")
+        st.selectbox("Sandbox", SANDBOX_CHOICES, key="codex_sandbox")
+        status = service.codex.status()
+        if status.available:
+            st.caption(status.version or "Codex CLI")
+        st.caption("`full` permite que o Codex use os mounts do host dentro do container.")
+
+    with history_tab:
+        thread_ids = [item["id"] for item in threads]
+        current = st.session_state.get("codex_thread_id")
+        if current is None and st.session_state.get("codex_new_chat"):
+            st.caption("Novo chat em branco.")
+        elif current not in thread_ids and thread_ids:
+            current = thread_ids[0]
+            st.session_state["codex_thread_id"] = current
+        if thread_ids:
+            labels = {item["id"]: item["name"] for item in threads}
+            selection = st.radio(
+                "Ultimas 20 conversas",
+                thread_ids,
+                index=None if st.session_state.get("codex_new_chat") and current is None else thread_ids.index(st.session_state["codex_thread_id"]),
+                format_func=lambda value: labels.get(value, value),
+                label_visibility="collapsed",
+            )
+            if selection:
+                st.session_state["codex_thread_id"] = selection
+                st.session_state["codex_new_chat"] = False
+        else:
+            st.caption("Sem conversas do Codex ainda.")
+
+    return st.session_state.get("codex_thread_id")
 
 
 def render_home() -> None:
     col_a, col_b, col_c = st.columns(3)
     col_a.metric("Paginas", "3")
     col_b.metric("Entradas", "YouTube + Torrent")
-    col_c.metric("IA", st.session_state.get("gemini_model", DEFAULT_MODEL))
+    col_c.metric("Orquestracao", "Skills + Codex")
 
     st.info(
         "Use o menu lateral do Streamlit para abrir `Chat`, `Downloads` e `Historico`. "

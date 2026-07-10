@@ -4,12 +4,18 @@ services:
     image: chat-media
     container_name: chat-media
     restart: unless-stopped
-    ports:
-      - "${PORT:-8501}:8501"
+    network_mode: host
     environment:
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      HOME: /home/appuser
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      STREAMLIT_SERVER_BASE_URL_PATH: "${BASE_PATH:-chat}"
     volumes:
       - "${DATA_DIR:-./data}:/app/data"
-      - "${MUSIC_DIR:-./media/music}:/app/media/music"
-      - "${MOVIES_DIR:-./media/movies}:/app/media/movies"
+      - "${MUSIC_DIR:-/mnt/sata/musics}:/app/media/music"
+      - "${MOVIES_DIR:-/mnt/sata/streamlito/downloads}:/app/media/movies"
       - "${DOWNLOADS_DIR:-./downloads}:/app/downloads"
+      - "${HOME}/.codex:/home/appuser/.codex"
+      - "/mnt/sata:/mnt/sata"
+      - "/home:/home"
+      - "/:/host"
+      - "/var/run/docker.sock:/var/run/docker.sock"

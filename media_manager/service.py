@@ -15,10 +15,15 @@ from torrent_manager.utils import utc_now
 
 from .classifier import classify_media
 from .config import MediaPaths, ensure_media_paths
+from .codex_runtime import CodexRuntime
+from .codex_sdk import CodexAuthError, CodexSDK, CodexSetupError
 from .db import MediaDatabase
-from .gemini import DEFAULT_MODEL, generate_reply, list_model_choices
-from .models import DownloadRecord
+from .models import ChatSessionRecord, DownloadRecord
+from .skills import render_skills
 from .youtube import YouTubeService
+
+
+POINTBOT_OUT_DIR = Path("/mnt/sata/pointbot/out")
 
 
 class MediaService:
@@ -27,19 +32,60 @@ class MediaService:
         self.db = MediaDatabase(self.paths.db_path)
         self.youtube = YouTubeService(self.paths, self.db)
         self.torrent_service = TorrentService(ensure_app_paths(root))
+        self.codex = CodexRuntime()
+        self.codex_sdk = CodexSDK(root)
 
-    def list_chat_messages(self) -> list[dict[str, str | None]]:
-        self._ensure_pending_metadata_prompts()
+    def list_codex_threads(self, limit: int = 20, model: str | None = None) -> list[dict[str, str]]:
+        try:
+            return self.codex_sdk.list_threads(limit=limit, model=model)
+        except (CodexAuthError, CodexSetupError, Exception):
+            return []
+
+    def list_codex_messages(
+        self,
+        thread_id: str | None,
+        model: str | None = None,
+        sandbox: str = "write",
+    ) -> list[dict[str, str]]:
+        if not thread_id:
+            return []
+        try:
+            return self.codex_sdk.read_thread(thread_id, model=model, sandbox=sandbox)
+        except (CodexAuthError, CodexSetupError, Exception):
+            return []
+
+    def list_codex_models(self) -> list[dict[str, str]]:
+        try:
+            return self.codex_sdk.list_models()
+        except (CodexAuthError, CodexSetupError, Exception):
+            return []
+
+    def list_chat_sessions(self, limit: int = 50, offset: int = 0) -> list[ChatSessionRecord]:
+        return self.db.list_chat_sessions(limit=limit, offset=offset)
+
+    def create_chat_session(self) -> ChatSessionRecord:
+        return self.db.create_chat_session()
+
+    def list_chat_messages(self, session_id: str = "default") -> list[dict[str, str | None]]:
+        self._ensure_pending_metadata_prompts(session_id=session_id)
         return [
-            {"role": item.role, "content": item.content, "model": item.model}
-            for item in self.db.list_chat_messages()
+            {
+                "role": item.role,
+                "content": item.content,
+                "model": item.model,
+                "artifact": self._extract_chat_artifact(item.content),
+            }
+            for item in self.db.list_chat_messages(session_id=session_id)
         ]
 
-    def add_chat_message(self, role: str, content: str, model: str | None = None) -> None:
-        self.db.add_chat_message(role=role, content=content, model=model)
-
-    def get_model_choices(self, api_key: str | None = None) -> list[str]:
-        return list_model_choices(api_key)
+    def add_chat_message(
+        self,
+        role: str,
+        content: str,
+        model: str | None = None,
+        session_id: str = "default",
+    ) -> None:
+        self.db.add_chat_message(role=role, content=content, model=model, session_id=session_id)
 
     def enqueue_youtube(
         self,
@@ -63,9 +109,9 @@ class MediaService:
             )
         return None
 
-    def add_torrent_from_magnet(self, magnet: str, api_key: str | None = None, model: str | None = None) -> TorrentRecord:
+    def add_torrent_from_magnet(self, magnet: str) -> TorrentRecord:
         name = self._extract_magnet_name(magnet) or magnet
-        media_type = classify_media(name, api_key=api_key, model=model)
+        media_type = classify_media(name)
         target_dir = self.paths.music_dir if media_type == "music" else self.paths.movies_dir
         record = self.torrent_service.add_magnets([magnet], download_dir=str(target_dir))[0]
         self._sync_torrent_to_download(record, media_type)
@@ -75,17 +121,15 @@ class MediaService:
         self,
         filename: str,
         payload: bytes,
-        api_key: str | None = None,
-        model: str | None = None,
     ) -> TorrentRecord:
-        media_type = classify_media(filename, api_key=api_key, model=model)
+        media_type = classify_media(filename)
         target_dir = self.paths.music_dir if media_type == "music" else self.paths.movies_dir
         record = self.torrent_service.add_torrent_file(
             filename=filename,
             payload=payload,
             download_dir=str(target_dir),
         )
-        inferred_media_type = classify_media(record.name or filename, api_key=api_key, model=model)
+        inferred_media_type = classify_media(record.name or filename)
         self._sync_torrent_to_download(record, inferred_media_type)
         return record
 
@@ -105,8 +149,8 @@ class MediaService:
         self._sync_playlist_records()
         return self.db.list_downloads()
 
-    def clear_chat(self) -> None:
-        self.db.clear_chat_messages()
+    def clear_chat(self, session_id: str = "default") -> None:
+        self.db.clear_chat_messages(session_id=session_id)
 
     def clear_download_history(self, stop_torrents: bool = True) -> int:
         stopped = 0
@@ -146,36 +190,31 @@ class MediaService:
             lines.append(f"- {item.display_name}: {state} ({percent}) em `{item.target_path}`")
         return "\n".join(lines)
 
-    def build_chat_reply(self, model: str, api_key: str | None = None, action_summary: str | None = None) -> str:
-        messages = self.list_chat_messages()
-        system_instruction = (
-            "Voce e um assistente de gerenciamento de midia em Streamlit. "
-            "Responda em portugues do Brasil. Seja curto, pratico e mencione onde os arquivos serao salvos. "
-            "Quando houver uma acao local executada, confirme o resultado e nao invente downloads."
-        )
-        prompt_payload = messages[-8:]
-        if action_summary:
-            prompt_payload = prompt_payload + [
-                {
-                    "role": "user",
-                    "content": f"Contexto de sistema sobre a ultima acao local:\n{action_summary}",
-                    "model": None,
-                }
-            ]
-        return generate_reply(prompt_payload, model=model or DEFAULT_MODEL, api_key=api_key, system_instruction=system_instruction)
-
     def handle_chat_submission(
         self,
         prompt: str,
         uploaded_torrents: list[tuple[str, bytes]],
-        model: str,
-        api_key: str | None = None,
-    ) -> str:
+        session_id: str = "default",
+        current_thread_id: str | None = None,
+        model: str | None = None,
+        effort: str = "medium",
+        sandbox: str = "write",
+    ) -> dict[str, str | None]:
         prompt = prompt.strip()
         if not prompt:
             prompt = "Processe os arquivos .torrent anexados."
-        self.add_chat_message("user", prompt, model=None)
         action_notes: list[str] = []
+
+        slash_reply = self._handle_slash_command(
+            prompt,
+            current_thread_id=current_thread_id,
+            model=model,
+            effort=effort,
+            session_id=session_id,
+        )
+        if slash_reply:
+            self.add_chat_message("assistant", str(slash_reply["reply"]), model="codex-cli", session_id=session_id)
+            return slash_reply
 
         youtube_urls = self._extract_youtube_urls(prompt)
         magnets = self._extract_magnets(prompt)
@@ -183,10 +222,17 @@ class MediaService:
         metadata = self._extract_music_metadata(prompt, pending)
 
         if not youtube_urls and not magnets and not uploaded_torrents:
+            if self._looks_like_pointbot_pdf_request(prompt):
+                reply = self._pointbot_pdf_download_reply()
+                self.add_chat_message("assistant", reply, model="pointbot-orcamentos", session_id=session_id)
+                self.add_chat_message("user", prompt, model=None, session_id=session_id)
+                return {"reply": reply, "thread_id": current_thread_id}
+
             if self._looks_like_status_question(prompt):
                 reply = self.summarize_download_status()
-                self.add_chat_message("assistant", reply, model=model)
-                return reply
+                self.add_chat_message("assistant", reply, model="download_status", session_id=session_id)
+                self.add_chat_message("user", prompt, model=None, session_id=session_id)
+                return {"reply": reply, "thread_id": current_thread_id}
 
             if pending:
                 pending_details = self._load_download_details(pending)
@@ -201,8 +247,9 @@ class MediaService:
                     )
                     if resumed is None:
                         reply = "Nao consegui encontrar a musica pendente para retomar."
-                    self.add_chat_message("assistant", reply, model=model)
-                    return reply
+                    self.add_chat_message("user", prompt, model=None, session_id=session_id)
+                    self.add_chat_message("assistant", reply, model="youtube_music", session_id=session_id)
+                    return {"reply": reply, "thread_id": current_thread_id}
                 missing = []
                 if not merged_metadata.get("artist"):
                     missing.append("artista")
@@ -212,8 +259,9 @@ class MediaService:
                     f"Ainda preciso de {' e '.join(missing)} para organizar a musica. "
                     "Me envie aqui no chat no formato: `artista: Nome, album: Nome, musica: Nome`."
                 )
-                self.add_chat_message("assistant", reply, model=model)
-                return reply
+                self.add_chat_message("user", prompt, model=None, session_id=session_id)
+                self.add_chat_message("assistant", reply, model="youtube_music", session_id=session_id)
+                return {"reply": reply, "thread_id": current_thread_id}
 
         for url in youtube_urls:
             job = self.enqueue_youtube(
@@ -233,23 +281,309 @@ class MediaService:
                 )
 
         for magnet in magnets:
-            torrent = self.add_torrent_from_magnet(magnet, api_key=api_key, model=model)
+            torrent = self.add_torrent_from_magnet(magnet)
             action_notes.append(f"Torrent magnet: {torrent.name} -> {torrent.download_dir} [{torrent.status}]")
 
         for filename, payload in uploaded_torrents:
-            torrent = self.add_torrent_file(filename, payload, api_key=api_key, model=model)
+            torrent = self.add_torrent_file(filename, payload)
             action_notes.append(f"Arquivo .torrent: {torrent.name} -> {torrent.download_dir} [{torrent.status}]")
 
         if action_notes:
+            self.add_chat_message("user", prompt, model=None, session_id=session_id)
             reply = (
                 "\n".join(action_notes)
                 + "\n\nColoquei na fila de downloads. Acompanhe o progresso na aba Downloads."
             )
-        else:
-            action_summary = self.summarize_download_status()
-            reply = self.build_chat_reply(model=model, api_key=api_key, action_summary=action_summary)
-        self.add_chat_message("assistant", reply, model=model)
-        return reply
+            self.add_chat_message("assistant", reply, model="skills", session_id=session_id)
+            return {"reply": reply, "thread_id": current_thread_id}
+
+        if self.codex_sdk.is_available():
+            try:
+                result = self.codex_sdk.ask(
+                    prompt=prompt,
+                    thread_id=current_thread_id,
+                    model=model,
+                    effort=effort,
+                    sandbox=sandbox,
+                )
+                return {"reply": result.reply, "thread_id": result.thread_id}
+            except (CodexAuthError, CodexSetupError) as exc:
+                return {"reply": str(exc), "thread_id": current_thread_id}
+            except Exception as exc:
+                return {
+                    "reply": f"O Codex SDK falhou ao processar esta mensagem: {exc}",
+                    "thread_id": current_thread_id,
+                }
+
+        reply = (
+            "O Codex SDK ainda nao esta disponivel neste ambiente. "
+            "Instale `openai-codex` para usar o chat normal do Codex aqui."
+        )
+        return {"reply": reply, "thread_id": current_thread_id}
+
+    def _handle_slash_command(
+        self,
+        prompt: str,
+        current_thread_id: str | None = None,
+        model: str | None = None,
+        effort: str = "medium",
+        session_id: str = "default",
+    ) -> dict[str, str | None] | None:
+        parts = prompt.strip().split(maxsplit=1)
+        command = parts[0].lower()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        if not command.startswith("/"):
+            return None
+        if command == "/help":
+            return {
+                "reply": self.codex.command_help(),
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/status":
+            return {
+                "reply": self.codex.render_status() + "\n\n" + self.summarize_download_status(),
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/models":
+            models = self.list_codex_models()
+            if not models:
+                reply = "Nenhum modelo retornado pelo Codex SDK neste ambiente."
+            else:
+                lines = ["Modelos do Codex:"]
+                for item in models:
+                    suffix = " (default)" if item.get("default") else ""
+                    lines.append(f"- `{item['id']}`{suffix}")
+                reply = "\n".join(lines)
+            return {
+                "reply": reply,
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/model":
+            if not argument:
+                reply = f"Modelo atual: `{model or 'default do Codex'}`"
+                return {
+                    "reply": reply,
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            return {
+                "reply": f"Modelo alterado para `{argument}`.",
+                "thread_id": current_thread_id,
+                "model": argument,
+                "effort": effort,
+            }
+        if command == "/effort":
+            if not argument:
+                return {
+                    "reply": f"Effort atual: `{effort}`",
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            if argument not in {"low", "medium", "high"}:
+                return {
+                    "reply": "Uso: `/effort low|medium|high`",
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            return {
+                "reply": f"Effort alterado para `{argument}`.",
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": argument,
+            }
+        if command == "/threads":
+            threads = self.list_codex_threads(limit=20, model=model)
+            if not threads:
+                reply = "Nenhuma thread do Codex encontrada."
+            else:
+                lines = ["Ultimas threads do Codex:"]
+                for item in threads:
+                    lines.append(f"- `{item['id']}` {item['name']}")
+                reply = "\n".join(lines)
+            return {
+                "reply": reply,
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/sandbox":
+            if not argument:
+                return {
+                    "reply": "Sandbox atual: use o seletor lateral ou `/sandbox read|write|full`.",
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            if argument not in {"read", "write", "full"}:
+                return {
+                    "reply": "Uso: `/sandbox read|write|full`",
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            return {
+                "reply": f"Sandbox alterado para `{argument}`.",
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+                "sandbox": argument,
+            }
+        if command == "/resume":
+            if not argument:
+                return {
+                    "reply": "Uso: `/resume THREAD_ID`",
+                    "thread_id": current_thread_id,
+                    "model": model,
+                    "effort": effort,
+                }
+            return {
+                "reply": f"Thread retomada: `{argument}`.",
+                "thread_id": argument,
+                "model": model,
+                "effort": effort,
+            }
+        if command in {"/skills", "/skill"}:
+            return {
+                "reply": render_skills(),
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/pointbot":
+            if self._looks_like_pointbot_pdf_request(prompt):
+                reply = self._pointbot_pdf_download_reply()
+            else:
+                reply = (
+                    "Skill `pointbot-orcamentos` disponivel para uso pelo Codex neste projeto.\n"
+                    "- Use quando quiser cotacao/orcamento da Point Viagens.\n"
+                    "- O fluxo usa o projeto `/mnt/sata/pointbot`, gera HTML/PDF quando necessario e so envia email apos confirmacao.\n"
+                    "- Use `/pointbot pdf` para baixar no chat o PDF mais recente gerado em `/mnt/sata/pointbot/out`.\n"
+                    "- Para iniciar, descreva destino, datas, viajantes e produtos desejados."
+                )
+            return {
+                "reply": reply,
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command in {"/downloads", "/download"}:
+            return {
+                "reply": self.summarize_download_status(limit=10),
+                "thread_id": current_thread_id,
+                "model": model,
+                "effort": effort,
+            }
+        if command == "/new":
+            return {
+                "reply": "Novo chat iniciado.",
+                "thread_id": None,
+                "model": model,
+                "effort": effort,
+            }
+        return {
+            "reply": "Comando desconhecido. Use `/help` para ver os comandos disponiveis.",
+            "thread_id": current_thread_id,
+            "model": model,
+            "effort": effort,
+        }
+
+    def preview_activity(
+        self,
+        prompt: str,
+        uploaded_torrents: list[tuple[str, bytes]],
+        model: str | None = None,
+        effort: str = "medium",
+        sandbox: str = "write",
+        current_thread_id: str | None = None,
+    ) -> list[str]:
+        steps = [f"Modelo: `{model or 'default do Codex'}` | effort: `{effort}` | sandbox: `{sandbox}`"]
+        if uploaded_torrents:
+            steps.append(f"Lendo {len(uploaded_torrents)} arquivo(s) .torrent anexado(s).")
+        youtube_urls = self._extract_youtube_urls(prompt or "")
+        magnets = self._extract_magnets(prompt or "")
+        if youtube_urls:
+            steps.append(f"Roteando para skill de YouTube com {len(youtube_urls)} link(s).")
+            steps.append("Preparando fila e destino dos arquivos de audio.")
+        if magnets:
+            steps.append(f"Roteando para skill de torrent com {len(magnets)} magnet(s).")
+            steps.append("Registrando download e monitoramento local do torrent.")
+        if self._looks_like_pointbot_pdf_request(prompt or ""):
+            steps.append("Procurando PDF mais recente do Pointbot no disco.")
+        elif prompt.strip().startswith("/"):
+            steps.append("Executando comando slash do app.")
+        elif not youtube_urls and not magnets and not uploaded_torrents:
+            if current_thread_id:
+                steps.append(f"Retomando thread `{current_thread_id}` do Codex.")
+            else:
+                steps.append("Abrindo nova thread do Codex.")
+            steps.append("Enviando prompt para o Codex SDK.")
+            steps.append("Aguardando resposta final do modelo.")
+        return steps
+
+    def _pointbot_pdf_download_reply(self) -> str:
+        pdf_path = self._latest_pointbot_pdf()
+        if pdf_path is None:
+            return (
+                "Ainda nao encontrei PDF de cotacao em `/mnt/sata/pointbot/out`. "
+                "Gere o PDF pela skill `pointbot-orcamentos` e depois use `/pointbot pdf`."
+            )
+        artifact = {
+            "kind": "download",
+            "path": str(pdf_path),
+            "filename": pdf_path.name,
+            "mime": "application/pdf",
+            "label": "Baixar PDF da cotacao",
+        }
+        return (
+            f"PDF mais recente da Point Viagens disponivel para download: `{pdf_path.name}`.\n\n"
+            f"<!-- chat-media-artifact {json.dumps(artifact, ensure_ascii=True)} -->"
+        )
+
+    @staticmethod
+    def _latest_pointbot_pdf() -> Path | None:
+        if not POINTBOT_OUT_DIR.exists():
+            return None
+        pdfs = [path for path in POINTBOT_OUT_DIR.glob("*.pdf") if path.is_file()]
+        if not pdfs:
+            return None
+        return max(pdfs, key=lambda path: path.stat().st_mtime)
+
+    @staticmethod
+    def _looks_like_pointbot_pdf_request(prompt: str) -> bool:
+        normalized = prompt.lower()
+        wants_file = any(term in normalized for term in ("pdf", "download", "baixar", "baixa", "anexo"))
+        mentions_quote = any(term in normalized for term in ("pointbot", "point bot", "cotacao", "cotação", "orcamento", "orçamento"))
+        return wants_file and mentions_quote
+
+    @staticmethod
+    def _extract_chat_artifact(content: str) -> dict[str, str] | None:
+        match = re.search(r"<!-- chat-media-artifact (\{.*?\}) -->", content or "", flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or payload.get("kind") != "download":
+            return None
+        path = Path(str(payload.get("path", "")))
+        if not path.is_file():
+            return None
+        return {
+            "path": str(path),
+            "filename": str(payload.get("filename") or path.name),
+            "mime": str(payload.get("mime") or "application/octet-stream"),
+            "label": str(payload.get("label") or "Baixar arquivo"),
+        }
 
     def _find_download_by_external_id(self, external_id: str) -> DownloadRecord | None:
         for item in self.db.list_downloads(limit=500):
@@ -326,7 +660,7 @@ class MediaService:
         except Exception:
             return {}
 
-    def _ensure_pending_metadata_prompts(self) -> None:
+    def _ensure_pending_metadata_prompts(self, session_id: str = "default") -> None:
         for item in self.db.list_downloads(limit=50):
             if item.source_kind != "youtube" or item.status != "needs_info":
                 continue
@@ -343,6 +677,7 @@ class MediaService:
                 "assistant",
                 self.youtube._build_metadata_request_message(item, metadata, missing),
                 model=None,
+                session_id=session_id,
             )
 
     @staticmethod

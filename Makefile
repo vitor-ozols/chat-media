@@ -1,31 +1,46 @@
-IMAGE ?= media-control
-CONTAINER ?= media-control
-PORT ?= 8501
-BASE_PATH ?= media
+SERVICE ?= app
+CONTAINER ?= chat-media
+BASE_PATH ?= chat
 DATA_DIR ?= $(CURDIR)/data
 MUSIC_DIR ?= /mnt/sata/musics
-MOVIES_DIR ?= $(CURDIR)/media/movies
+MOVIES_DIR ?= /mnt/sata/streamlito/downloads
 DOWNLOADS_DIR ?= $(CURDIR)/downloads
 
-.PHONY: build start stop logs shell remove
+.PHONY: build start stop restart logs shell remove ps
 
 build:
 	mkdir -p "$(DATA_DIR)" "$(MUSIC_DIR)" "$(MOVIES_DIR)" "$(DOWNLOADS_DIR)"
-	docker build -t $(IMAGE) .
+	DATA_DIR="$(DATA_DIR)" \
+	MUSIC_DIR="$(MUSIC_DIR)" \
+	MOVIES_DIR="$(MOVIES_DIR)" \
+	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
+	BASE_PATH="$(BASE_PATH)" \
+	docker compose build $(SERVICE)
 
-start: build
-	-docker rm -f $(CONTAINER)
-	docker run -d --name $(CONTAINER) --restart unless-stopped -p $(PORT):8501 \
-		-e STREAMLIT_SERVER_BASE_URL_PATH="$(BASE_PATH)" \
-		-e GEMINI_API_KEY \
-		-v "$(DATA_DIR):/app/data" \
-		-v "$(MUSIC_DIR):/app/media/music" \
-		-v "$(MOVIES_DIR):/app/media/movies" \
-		-v "$(DOWNLOADS_DIR):/app/downloads" \
-		$(IMAGE)
+start:
+	mkdir -p "$(DATA_DIR)" "$(MUSIC_DIR)" "$(MOVIES_DIR)" "$(DOWNLOADS_DIR)"
+	DATA_DIR="$(DATA_DIR)" \
+	MUSIC_DIR="$(MUSIC_DIR)" \
+	MOVIES_DIR="$(MOVIES_DIR)" \
+	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
+	BASE_PATH="$(BASE_PATH)" \
+	docker compose up -d --build $(SERVICE)
 
 stop:
-	-docker stop $(CONTAINER)
+	DATA_DIR="$(DATA_DIR)" \
+	MUSIC_DIR="$(MUSIC_DIR)" \
+	MOVIES_DIR="$(MOVIES_DIR)" \
+	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
+	BASE_PATH="$(BASE_PATH)" \
+	docker compose stop $(SERVICE)
+
+restart:
+	DATA_DIR="$(DATA_DIR)" \
+	MUSIC_DIR="$(MUSIC_DIR)" \
+	MOVIES_DIR="$(MOVIES_DIR)" \
+	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
+	BASE_PATH="$(BASE_PATH)" \
+	docker compose restart $(SERVICE)
 
 logs:
 	docker logs -f $(CONTAINER)
@@ -34,4 +49,12 @@ shell:
 	docker exec -it $(CONTAINER) bash
 
 remove:
-	-docker rm -f $(CONTAINER)
+	DATA_DIR="$(DATA_DIR)" \
+	MUSIC_DIR="$(MUSIC_DIR)" \
+	MOVIES_DIR="$(MOVIES_DIR)" \
+	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
+	BASE_PATH="$(BASE_PATH)" \
+	docker compose rm -sf $(SERVICE)
+
+ps:
+	docker ps --filter name=$(CONTAINER)

@@ -1,4 +1,4 @@
 streamlit==1.55.0
-google-genai
+openai-codex
 yt-dlp
 libtorrent==2.0.11

@@ -35,7 +35,16 @@ class DownloadRecord:
 @dataclass(slots=True)
 class ChatMessageRecord:
     id: int | None
+    session_id: str
     role: str
     content: str
     model: str | None
     created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class ChatSessionRecord:
+    id: str
+    title: str
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)

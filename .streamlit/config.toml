@@ -1,4 +1,4 @@
 [server]
 headless = true
 runOnSave = false
-baseUrlPath = "media"
+baseUrlPath = "torrent"

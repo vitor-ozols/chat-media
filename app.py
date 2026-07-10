@@ -1,46 +1,60 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
-from media_manager.gemini import DEFAULT_MODEL, DOCUMENTED_CHAT_MODELS
 from media_manager.service import get_media_service
-from ui_shell import configure_page
+from ui_shell import configure_page, render_codex_sidebar
 
 
 configure_page(
-    "Chat Media",
-    "Converse com o agente para baixar audio do YouTube e organizar sua biblioteca.",
-    sidebar_models=DOCUMENTED_CHAT_MODELS,
+    "Codex",
+    "",
 )
 
 service = get_media_service()
+thread_id = render_codex_sidebar(service)
 
-top_left, top_right = st.columns([1.0, 0.24])
-top_left.subheader("Conversa")
-if top_right.button("Limpar chat", width="stretch"):
-    service.clear_chat()
-    st.rerun()
+st.subheader("Codex")
 
-@st.fragment(run_every="2s")
 def render_chat_history() -> None:
-    messages = service.list_chat_messages()
-    if not messages:
-        with st.chat_message("assistant"):
-            st.write(
-                "Envie um link do YouTube para extrair audio, cole um magnet, "
-                "ou abra a pagina de downloads para adicionar magnets e arquivos .torrent."
-            )
-        return
-
+    messages = service.list_codex_messages(
+        thread_id=thread_id,
+        model=st.session_state.get("codex_model"),
+        sandbox=st.session_state.get("codex_sandbox", "full"),
+    )
     for message in messages:
         with st.chat_message("assistant" if message["role"] == "assistant" else "user"):
-            st.write(message["content"])
+            st.write(_strip_artifact_marker(message["content"]))
+            artifact = message.get("artifact")
+            if artifact:
+                _render_download_artifact(artifact)
+
+
+def _strip_artifact_marker(content: str) -> str:
+    return content.split("<!-- chat-media-artifact", 1)[0].strip()
+
+
+def _render_download_artifact(artifact: dict[str, str]) -> None:
+    path = Path(artifact["path"])
+    if not path.is_file():
+        st.warning("Arquivo de download nao encontrado no disco.")
+        return
+    st.download_button(
+        artifact.get("label") or "Baixar arquivo",
+        data=path.read_bytes(),
+        file_name=artifact.get("filename") or path.name,
+        mime=artifact.get("mime") or "application/octet-stream",
+        width="stretch",
+        key=f"download-artifact-{path}",
+    )
 
 
 render_chat_history()
 
 chat_value = st.chat_input(
-    "Peça um download, cole um YouTube ou um magnet...",
+    "Mensagem",
     accept_file="multiple",
     file_type=["torrent"],
 )
@@ -60,12 +74,35 @@ if chat_value:
             st.caption(f"Anexo: {item.name}")
 
     with st.chat_message("assistant"):
-        with st.spinner("Processando sua solicitacao..."):
+        with st.status("Executando", expanded=True) as status_box:
+            for step in service.preview_activity(
+                prompt=prompt,
+                uploaded_torrents=uploads,
+                model=st.session_state.get("codex_model"),
+                effort=st.session_state.get("codex_effort", "medium"),
+                sandbox=st.session_state.get("codex_sandbox", "full"),
+                current_thread_id=st.session_state.get("codex_thread_id"),
+            ):
+                status_box.write(step)
             reply = service.handle_chat_submission(
                 prompt=prompt,
                 uploaded_torrents=uploads,
-                model=st.session_state.get("gemini_model", DEFAULT_MODEL),
-                api_key=st.session_state.get("gemini_api_key") or None,
+                current_thread_id=st.session_state.get("codex_thread_id"),
+                model=st.session_state.get("codex_model"),
+                effort=st.session_state.get("codex_effort", "medium"),
+                sandbox=st.session_state.get("codex_sandbox", "full"),
             )
-        st.write(reply)
+            if reply.get("thread_id") and reply.get("thread_id") != st.session_state.get("codex_thread_id"):
+                status_box.write(f"Thread ativa: `{reply['thread_id']}`")
+            status_box.write("Resposta concluida.")
+            status_box.update(label="Concluido", state="complete", expanded=False)
+        st.session_state["codex_thread_id"] = reply.get("thread_id")
+        st.session_state["codex_new_chat"] = False
+        if reply.get("model"):
+            st.session_state["codex_model"] = reply["model"]
+        if reply.get("effort"):
+            st.session_state["codex_effort"] = reply["effort"]
+        if reply.get("sandbox"):
+            st.session_state["codex_sandbox"] = reply["sandbox"]
+        st.write(_strip_artifact_marker(str(reply.get("reply") or "")))
     st.rerun()

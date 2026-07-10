@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
 
-from .models import ChatMessageRecord, DownloadRecord
+from torrent_manager.utils import utc_now
+
+from .models import ChatMessageRecord, ChatSessionRecord, DownloadRecord
 
 
 class MediaDatabase:
@@ -42,14 +45,34 @@ class MediaDatabase:
 
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL DEFAULT 'default',
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     model TEXT,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            self._ensure_column("chat_messages", "session_id", "TEXT NOT NULL DEFAULT 'default'")
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO chat_sessions (id, title, created_at, updated_at)
+                VALUES ('default', 'Chat inicial', datetime('now'), datetime('now'))
                 """
             )
             self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        columns = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def upsert_download(self, record: DownloadRecord) -> None:
         with self.lock:
@@ -105,15 +128,59 @@ class MediaDatabase:
             self.conn.execute("DELETE FROM downloads WHERE id = ?", (download_id,))
             self.conn.commit()
 
-    def add_chat_message(self, role: str, content: str, model: str | None = None) -> ChatMessageRecord:
+    def create_chat_session(self, title: str = "Novo chat") -> ChatSessionRecord:
+        session_id = uuid.uuid4().hex
+        now = utc_now()
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT INTO chat_sessions (id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, title, now, now),
+            )
+            self.conn.commit()
+        return ChatSessionRecord(id=session_id, title=title, created_at=now, updated_at=now)
+
+    def list_chat_sessions(self, limit: int = 50, offset: int = 0) -> list[ChatSessionRecord]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def touch_chat_session(self, session_id: str, title: str | None = None) -> None:
+        with self.lock:
+            if title:
+                self.conn.execute(
+                    "UPDATE chat_sessions SET title = ?, updated_at = datetime('now') WHERE id = ?",
+                    (title[:80], session_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
+                    (session_id,),
+                )
+            self.conn.commit()
+
+    def add_chat_message(
+        self,
+        role: str,
+        content: str,
+        model: str | None = None,
+        session_id: str = "default",
+    ) -> ChatMessageRecord:
         with self.lock:
             cursor = self.conn.execute(
                 """
-                INSERT INTO chat_messages (role, content, model, created_at)
-                VALUES (?, ?, ?, datetime('now'))
+                INSERT INTO chat_messages (session_id, role, content, model, created_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
                 """,
-                (role, content, model),
+                (session_id, role, content, model),
             )
+            title = content.strip().splitlines()[0] if role == "user" else None
+            self.touch_chat_session(session_id, title=title if title else None)
             self.conn.commit()
             row = self.conn.execute(
                 "SELECT * FROM chat_messages WHERE id = ?",
@@ -121,17 +188,17 @@ class MediaDatabase:
             ).fetchone()
         return self._row_to_chat(row)
 
-    def list_chat_messages(self, limit: int = 100) -> list[ChatMessageRecord]:
+    def list_chat_messages(self, limit: int = 100, session_id: str = "default") -> list[ChatMessageRecord]:
         with self.lock:
             rows = self.conn.execute(
-                "SELECT * FROM chat_messages ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, limit),
             ).fetchall()
         return [self._row_to_chat(row) for row in reversed(rows)]
 
-    def clear_chat_messages(self) -> None:
+    def clear_chat_messages(self, session_id: str = "default") -> None:
         with self.lock:
-            self.conn.execute("DELETE FROM chat_messages")
+            self.conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
             self.conn.commit()
 
     @staticmethod
@@ -157,8 +224,18 @@ class MediaDatabase:
     def _row_to_chat(row: sqlite3.Row) -> ChatMessageRecord:
         return ChatMessageRecord(
             id=row["id"],
+            session_id=row["session_id"],
             role=row["role"],
             content=row["content"],
             model=row["model"],
             created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_session(row: sqlite3.Row) -> ChatSessionRecord:
+        return ChatSessionRecord(
+            id=row["id"],
+            title=row["title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )

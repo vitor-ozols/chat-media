@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import re
 
-from .gemini import DEFAULT_MODEL, generate_reply
-
-
 MOVIE_HINTS = {
     "1080p",
     "2160p",
@@ -23,6 +20,12 @@ MOVIE_HINTS = {
     "season",
     "s01",
     "s02",
+    "s03",
+    "s04",
+    "s05",
+    "s06",
+    "hdtv",
+    "remux",
 }
 MUSIC_HINTS = {
     "mp3",
@@ -36,10 +39,12 @@ MUSIC_HINTS = {
     "320kbps",
     "music",
     "ost",
+    "discografia",
+    "ao vivo",
 }
 
 
-def classify_media(label: str, api_key: str | None = None, model: str | None = None) -> str:
+def classify_media(label: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", label.lower())
     tokens = set(normalized.split())
 
@@ -52,23 +57,5 @@ def classify_media(label: str, api_key: str | None = None, model: str | None = N
         return "music"
     if any(ext in normalized for ext in (".mkv", ".mp4", ".avi", ".mov")):
         return "movie"
-
-    if api_key:
-        result = generate_reply(
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Classifique a midia abaixo como `music`, `movie` ou `unknown`. "
-                        "Responda com apenas uma palavra.\n\n"
-                        f"Entrada: {label}"
-                    ),
-                }
-            ],
-            model=model or DEFAULT_MODEL,
-            api_key=api_key,
-        ).strip().lower()
-        if result in {"music", "movie", "unknown"}:
-            return result
 
     return "movie"

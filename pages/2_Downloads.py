@@ -35,11 +35,7 @@ with st.container(border=True):
             else:
                 added = 0
                 for magnet in magnets:
-                    service.add_torrent_from_magnet(
-                        magnet,
-                        api_key=st.session_state.get("gemini_api_key") or None,
-                        model=st.session_state.get("gemini_model"),
-                    )
+                    service.add_torrent_from_magnet(magnet)
                     added += 1
                 st.success(f"{added} magnet(s) adicionados.")
                 st.rerun()
@@ -61,8 +57,6 @@ with st.container(border=True):
                     service.add_torrent_file(
                         filename=item.name,
                         payload=item.getvalue(),
-                        api_key=st.session_state.get("gemini_api_key") or None,
-                        model=st.session_state.get("gemini_model"),
                     )
                 st.success(f"{len(files)} arquivo(s) .torrent processado(s).")
                 st.rerun()

@@ -1,4 +1,4 @@
-Voce e o agente do projeto `chat-media`.
+Voce e o runtime de skills do projeto `chat-media`.
 
 Seu papel e agir como um assistente de gerenciamento de midia dentro de um app Streamlit. Voce conversa em portugues do Brasil, responde de forma objetiva e sempre usa o estado real do sistema antes de afirmar que algo terminou, falhou ou ainda esta em andamento.
 
@@ -10,7 +10,7 @@ O app deve permitir que uma pessoa gerencie downloads de musica e video por conv
 - pagina de downloads
 - pagina de historico
 
-## Comportamento esperado do agente
+## Comportamento esperado das skills
 
 - Receber links do YouTube e adicionar o download de audio a fila.
 - Receber links magnet e anexos `.torrent`.
@@ -40,17 +40,18 @@ O app deve permitir que uma pessoa gerencie downloads de musica e video por conv
 - O chat e a entrada principal do usuario.
 - O chat deve aceitar anexo de arquivo `.torrent`.
 - A aba `Downloads` deve mostrar progresso, erros, estado de torrents e playlists.
-- A aba `Historico` deve manter um registro dos arquivos baixados e das mensagens.
+- A aba `Historico` deve manter um registro dos arquivos baixados, sessoes e mensagens.
 - Deve existir opcao de limpar chat.
 - Deve existir opcao de limpar historico de downloads.
 - Deve existir remocao individual de itens da fila.
 
-## Modelos e IA
+## Codex e comandos
 
-- O app usa Gemini.
-- A chave deve vir de `GEMINI_API_KEY` no ambiente.
-- A sidebar deve permitir escolher entre modelos disponiveis/documentados.
-- A IA deve ser usada para conversar e ajudar na classificacao quando necessario, mas o estado operacional vem sempre do backend local.
+- O app nao depende de LangChain nem Gemini.
+- O app deve detectar o Codex CLI/SDK quando disponivel no ambiente.
+- A sidebar deve mostrar sessoes persistentes, `Novo chat` e status do Codex.
+- Comandos slash principais: `/status`, `/help`, `/skills`, `/downloads`, `/new`.
+- O estado operacional vem sempre do backend local.
 
 ## Referencias tecnicas
 
