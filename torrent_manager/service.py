@@ -5,6 +5,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+import socket
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import AppPaths
@@ -352,22 +353,41 @@ class TorrentService:
             | int(lt.alert.category_t.storage_notification)
             | int(lt.alert.category_t.tracker_notification)
         )
-        session.apply_settings(
-            {
-                "user_agent": "streamlito/1.0",
-                "listen_interfaces": "0.0.0.0:6881",
-                "enable_dht": True,
-                "enable_lsd": True,
-                "enable_upnp": True,
-                "enable_natpmp": True,
-                "alert_mask": alert_mask,
-            }
-        )
+        outbound_ip = self._detect_outbound_ip()
+        listen_interfaces = "0.0.0.0:6881,[::]:6881"
+        if outbound_ip:
+            listen_interfaces = f"{outbound_ip}:6881,[::]:6881"
+
+        settings = {
+            "user_agent": "streamlito/1.0",
+            "listen_interfaces": listen_interfaces,
+            "enable_dht": True,
+            "enable_lsd": True,
+            "enable_upnp": True,
+            "enable_natpmp": True,
+            "alert_mask": alert_mask,
+        }
+        if outbound_ip:
+            settings["announce_ip"] = outbound_ip
+            settings["outgoing_interfaces"] = outbound_ip
+        session.apply_settings(settings)
         session.start_dht()
         session.start_lsd()
         session.start_upnp()
         session.start_natpmp()
         return session
+
+    @staticmethod
+    def _detect_outbound_ip() -> str | None:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            address = probe.getsockname()[0]
+            return None if address.startswith("127.") else address
+        except OSError:
+            return None
+        finally:
+            probe.close()
 
     def _restore_active_torrents(self) -> None:
         for record in self.list_torrents(include_removed=True):
@@ -657,4 +677,3 @@ class TorrentService:
             return None
         text = str(value)
         return text if text and text != "0000000000000000000000000000000000000000" else None
-
