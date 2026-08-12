@@ -237,6 +237,59 @@ class TorrentService:
                 self._log_event(torrent_id, "error", f"Falha ao revalidar torrent: {exc}")
                 return failed
 
+    def restart_torrent(self, torrent_id: str) -> TorrentRecord | None:
+        """Recreate a torrent handle without deleting any downloaded files."""
+        with self.lock:
+            record = self.records.get(torrent_id)
+            if not record:
+                return None
+            if not self.engine_available or self.session is None:
+                failed = record.copy(
+                    status=TorrentStatus.ERROR,
+                    error_message=self.engine_message,
+                    updated_at=utc_now(),
+                )
+                self._save_record(failed)
+                return failed
+
+            try:
+                old_handle = self.handles.pop(torrent_id, None)
+                if old_handle and old_handle.is_valid():
+                    self._request_resume_dump_for_handle(old_handle)
+                    self.session.remove_torrent(old_handle)
+
+                restarting = record.copy(
+                    status=TorrentStatus.QUEUED,
+                    download_rate=0,
+                    upload_rate=0,
+                    peers=0,
+                    seeds=0,
+                    eta_seconds=None,
+                    error_message=None,
+                    updated_at=utc_now(),
+                )
+                self._save_record(restarting)
+                handle = self._ensure_handle(restarting, start_paused=False)
+                handle.force_recheck()
+                handle.resume()
+                self._log_event(
+                    torrent_id,
+                    "warning",
+                    "Torrent reiniciado na sessao; arquivos mantidos e revalidacao solicitada.",
+                )
+                return self._refresh_record(torrent_id)
+            except Exception as exc:
+                failed = record.copy(
+                    status=TorrentStatus.ERROR,
+                    download_rate=0,
+                    upload_rate=0,
+                    error_message=str(exc),
+                    updated_at=utc_now(),
+                )
+                self._save_record(failed)
+                self._log_event(torrent_id, "error", f"Falha ao reiniciar torrent: {exc}")
+                return failed
+
     def remove_torrent(self, torrent_id: str, delete_files: bool = False) -> TorrentRecord | None:
         with self.lock:
             record = self.records.get(torrent_id)

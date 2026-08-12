@@ -1,0 +1,4 @@
+interface:
+  display_name: "Archive.org Music"
+  short_description: "Baixa e organiza álbuns públicos no Navidrome"
+  default_prompt: "Use $archive-org-music para baixar este álbum público do Archive.org e organizá-lo na biblioteca."

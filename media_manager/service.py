@@ -19,7 +19,6 @@ from .codex_runtime import CodexRuntime
 from .codex_sdk import CodexAuthError, CodexSDK, CodexSetupError
 from .db import MediaDatabase
 from .models import ChatSessionRecord, DownloadRecord
-from .skills import render_skills
 from .youtube import YouTubeService
 
 
@@ -34,11 +33,24 @@ class MediaService:
         self.torrent_service = TorrentService(ensure_app_paths(root))
         self.codex = CodexRuntime()
         self.codex_sdk = CodexSDK(root)
+        self._codex_errors: dict[str, str] = {}
+
+    def _set_codex_error(self, operation: str, exc: Exception | None) -> None:
+        if exc is None:
+            self._codex_errors.pop(operation, None)
+        else:
+            self._codex_errors[operation] = str(exc)
+
+    def codex_error(self, operation: str) -> str | None:
+        return self._codex_errors.get(operation)
 
     def list_codex_threads(self, limit: int = 20, model: str | None = None) -> list[dict[str, str]]:
         try:
-            return self.codex_sdk.list_threads(limit=limit, model=model)
-        except (CodexAuthError, CodexSetupError, Exception):
+            result = self.codex_sdk.list_threads(limit=limit, model=model)
+            self._set_codex_error("threads", None)
+            return result
+        except Exception as exc:
+            self._set_codex_error("threads", exc)
             return []
 
     def list_codex_messages(
@@ -50,15 +62,24 @@ class MediaService:
         if not thread_id:
             return []
         try:
-            return self.codex_sdk.read_thread(thread_id, model=model, sandbox=sandbox)
-        except (CodexAuthError, CodexSetupError, Exception):
+            result = self.codex_sdk.read_thread(thread_id, model=model, sandbox=sandbox)
+            self._set_codex_error("messages", None)
+            return result
+        except Exception as exc:
+            self._set_codex_error("messages", exc)
             return []
 
     def list_codex_models(self) -> list[dict[str, str]]:
         try:
-            return self.codex_sdk.list_models()
-        except (CodexAuthError, CodexSetupError, Exception):
+            result = self.codex_sdk.list_models()
+            self._set_codex_error("models", None)
+            return result
+        except Exception as exc:
+            self._set_codex_error("models", exc)
             return []
+
+    def list_codex_skills(self) -> list[dict[str, str]]:
+        return self.codex_sdk.list_skills()
 
     def list_chat_sessions(self, limit: int = 50, offset: int = 0) -> list[ChatSessionRecord]:
         return self.db.list_chat_sessions(limit=limit, offset=offset)
@@ -92,8 +113,14 @@ class MediaService:
         url: str,
         metadata: dict[str, str] | None = None,
         treat_as_playlist: bool = False,
+        final_path: str | None = None,
     ) -> DownloadRecord:
-        return self.youtube.enqueue(url, metadata=metadata, treat_as_playlist=treat_as_playlist)
+        return self.youtube.enqueue(
+            url,
+            metadata=metadata,
+            treat_as_playlist=treat_as_playlist,
+            final_path=final_path,
+        )
 
     def retry_youtube_download(self, download_id: str) -> DownloadRecord | None:
         record = self.db.get_download(download_id)
@@ -109,11 +136,22 @@ class MediaService:
             )
         return None
 
-    def add_torrent_from_magnet(self, magnet: str) -> TorrentRecord:
+    def add_torrent_from_magnet(
+        self,
+        magnet: str,
+        final_path: str | None = None,
+        start_paused: bool = False,
+    ) -> TorrentRecord:
         name = self._extract_magnet_name(magnet) or magnet
         media_type = classify_media(name)
-        target_dir = self.paths.music_dir if media_type == "music" else self.paths.movies_dir
-        record = self.torrent_service.add_magnets([magnet], download_dir=str(target_dir))[0]
+        target_dir = Path(final_path) if final_path else (
+            self.paths.music_dir if media_type == "music" else self.paths.movies_dir
+        )
+        record = self.torrent_service.add_magnets(
+            [magnet],
+            download_dir=str(target_dir),
+            start_paused=start_paused,
+        )[0]
         self._sync_torrent_to_download(record, media_type)
         return record
 
@@ -193,7 +231,7 @@ class MediaService:
     def handle_chat_submission(
         self,
         prompt: str,
-        uploaded_torrents: list[tuple[str, bytes]],
+        uploaded_torrents: list[tuple[str, bytes]] | None = None,
         session_id: str = "default",
         current_thread_id: str | None = None,
         model: str | None = None,
@@ -202,100 +240,7 @@ class MediaService:
     ) -> dict[str, str | None]:
         prompt = prompt.strip()
         if not prompt:
-            prompt = "Processe os arquivos .torrent anexados."
-        action_notes: list[str] = []
-
-        slash_reply = self._handle_slash_command(
-            prompt,
-            current_thread_id=current_thread_id,
-            model=model,
-            effort=effort,
-            session_id=session_id,
-        )
-        if slash_reply:
-            self.add_chat_message("assistant", str(slash_reply["reply"]), model="codex-cli", session_id=session_id)
-            return slash_reply
-
-        youtube_urls = self._extract_youtube_urls(prompt)
-        magnets = self._extract_magnets(prompt)
-        pending = self._latest_pending_youtube_info()
-        metadata = self._extract_music_metadata(prompt, pending)
-
-        if not youtube_urls and not magnets and not uploaded_torrents:
-            if self._looks_like_pointbot_pdf_request(prompt):
-                reply = self._pointbot_pdf_download_reply()
-                self.add_chat_message("assistant", reply, model="pointbot-orcamentos", session_id=session_id)
-                self.add_chat_message("user", prompt, model=None, session_id=session_id)
-                return {"reply": reply, "thread_id": current_thread_id}
-
-            if self._looks_like_status_question(prompt):
-                reply = self.summarize_download_status()
-                self.add_chat_message("assistant", reply, model="download_status", session_id=session_id)
-                self.add_chat_message("user", prompt, model=None, session_id=session_id)
-                return {"reply": reply, "thread_id": current_thread_id}
-
-            if pending:
-                pending_details = self._load_download_details(pending)
-                pending_metadata = pending_details.get("metadata", {})
-                merged_metadata = {**pending_metadata, **metadata}
-                if merged_metadata.get("artist") and merged_metadata.get("album"):
-                    resumed = self.youtube.resume_with_metadata(pending.id, merged_metadata)
-                    reply = (
-                        "Perfeito, atualizei os metadados e coloquei a musica de volta na fila. "
-                        f"Ela sera organizada em `{self.paths.music_dir / merged_metadata['artist'] / merged_metadata['album']}`. "
-                        "Acompanhe o progresso na aba Downloads."
-                    )
-                    if resumed is None:
-                        reply = "Nao consegui encontrar a musica pendente para retomar."
-                    self.add_chat_message("user", prompt, model=None, session_id=session_id)
-                    self.add_chat_message("assistant", reply, model="youtube_music", session_id=session_id)
-                    return {"reply": reply, "thread_id": current_thread_id}
-                missing = []
-                if not merged_metadata.get("artist"):
-                    missing.append("artista")
-                if not merged_metadata.get("album"):
-                    missing.append("album")
-                reply = (
-                    f"Ainda preciso de {' e '.join(missing)} para organizar a musica. "
-                    "Me envie aqui no chat no formato: `artista: Nome, album: Nome, musica: Nome`."
-                )
-                self.add_chat_message("user", prompt, model=None, session_id=session_id)
-                self.add_chat_message("assistant", reply, model="youtube_music", session_id=session_id)
-                return {"reply": reply, "thread_id": current_thread_id}
-
-        for url in youtube_urls:
-            job = self.enqueue_youtube(
-                url,
-                metadata=metadata,
-                treat_as_playlist=self._should_treat_as_playlist(url, prompt),
-            )
-            if job.source_kind == "youtube_playlist":
-                action_notes.append(
-                    f"Playlist adicionada a fila: {job.display_name} -> {job.target_path}. "
-                    "Vou baixar as faixas individualmente e organizar como album."
-                )
-            else:
-                action_notes.append(
-                    f"YouTube adicionado a fila: {url} -> {job.target_path}. "
-                    "Se faltar artista ou album, eu vou pausar e pedir esses dados antes de baixar."
-                )
-
-        for magnet in magnets:
-            torrent = self.add_torrent_from_magnet(magnet)
-            action_notes.append(f"Torrent magnet: {torrent.name} -> {torrent.download_dir} [{torrent.status}]")
-
-        for filename, payload in uploaded_torrents:
-            torrent = self.add_torrent_file(filename, payload)
-            action_notes.append(f"Arquivo .torrent: {torrent.name} -> {torrent.download_dir} [{torrent.status}]")
-
-        if action_notes:
-            self.add_chat_message("user", prompt, model=None, session_id=session_id)
-            reply = (
-                "\n".join(action_notes)
-                + "\n\nColoquei na fila de downloads. Acompanhe o progresso na aba Downloads."
-            )
-            self.add_chat_message("assistant", reply, model="skills", session_id=session_id)
-            return {"reply": reply, "thread_id": current_thread_id}
+            return {"reply": "Digite uma mensagem para o Codex.", "thread_id": current_thread_id}
 
         if self.codex_sdk.is_available():
             try:
@@ -451,13 +396,6 @@ class MediaService:
                 "model": model,
                 "effort": effort,
             }
-        if command in {"/skills", "/skill"}:
-            return {
-                "reply": render_skills(),
-                "thread_id": current_thread_id,
-                "model": model,
-                "effort": effort,
-            }
         if command == "/pointbot":
             if self._looks_like_pointbot_pdf_request(prompt):
                 reply = self._pointbot_pdf_download_reply()
@@ -506,27 +444,12 @@ class MediaService:
         current_thread_id: str | None = None,
     ) -> list[str]:
         steps = [f"Modelo: `{model or 'default do Codex'}` | effort: `{effort}` | sandbox: `{sandbox}`"]
-        if uploaded_torrents:
-            steps.append(f"Lendo {len(uploaded_torrents)} arquivo(s) .torrent anexado(s).")
-        youtube_urls = self._extract_youtube_urls(prompt or "")
-        magnets = self._extract_magnets(prompt or "")
-        if youtube_urls:
-            steps.append(f"Roteando para skill de YouTube com {len(youtube_urls)} link(s).")
-            steps.append("Preparando fila e destino dos arquivos de audio.")
-        if magnets:
-            steps.append(f"Roteando para skill de torrent com {len(magnets)} magnet(s).")
-            steps.append("Registrando download e monitoramento local do torrent.")
-        if self._looks_like_pointbot_pdf_request(prompt or ""):
-            steps.append("Procurando PDF mais recente do Pointbot no disco.")
-        elif prompt.strip().startswith("/"):
-            steps.append("Executando comando slash do app.")
-        elif not youtube_urls and not magnets and not uploaded_torrents:
-            if current_thread_id:
-                steps.append(f"Retomando thread `{current_thread_id}` do Codex.")
-            else:
-                steps.append("Abrindo nova thread do Codex.")
-            steps.append("Enviando prompt para o Codex SDK.")
-            steps.append("Aguardando resposta final do modelo.")
+        if current_thread_id:
+            steps.append(f"Retomando thread `{current_thread_id}` do Codex.")
+        else:
+            steps.append("Abrindo nova thread do Codex.")
+        steps.append("Enviando prompt para o Codex SDK.")
+        steps.append("Aguardando resposta final do modelo.")
         return steps
 
     def _pointbot_pdf_download_reply(self) -> str:

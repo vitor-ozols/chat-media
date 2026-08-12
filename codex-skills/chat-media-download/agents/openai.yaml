@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chat Media Downloads"
+  short_description: "Enfileira torrents e áudios do YouTube"
+  default_prompt: "Use $chat-media-download para baixar esta mídia pela API local e acompanhar o progresso."

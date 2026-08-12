@@ -29,19 +29,21 @@ class YouTubeService:
         url: str,
         metadata: dict[str, str] | None = None,
         treat_as_playlist: bool = False,
+        final_path: str | None = None,
     ) -> DownloadRecord:
         if treat_as_playlist:
-            return self._enqueue_playlist(url, metadata=metadata)
-        return self._create_video_job(url, metadata=metadata)
+            return self._enqueue_playlist(url, metadata=metadata, final_path=final_path)
+        return self._create_video_job(url, metadata=metadata, final_path=final_path)
 
     def _create_video_job(
         self,
         url: str,
         metadata: dict[str, str] | None = None,
         parent_id: str | None = None,
+        final_path: str | None = None,
     ) -> DownloadRecord:
         download_id = uuid.uuid4().hex
-        details = {"metadata": metadata or {}, "parent_id": parent_id}
+        details = {"metadata": metadata or {}, "parent_id": parent_id, "final_path": final_path}
         record = DownloadRecord(
             id=download_id,
             source_kind="youtube",
@@ -49,17 +51,22 @@ class YouTubeService:
             display_name=url,
             media_type="music",
             status="queued",
-            target_path=str(self.paths.music_dir),
+            target_path=final_path or str(self.paths.music_dir),
             details_json=json.dumps(details),
         )
         self.db.upsert_download(record)
         self.jobs.put(download_id)
         return record
 
-    def _enqueue_playlist(self, url: str, metadata: dict[str, str] | None = None) -> DownloadRecord:
+    def _enqueue_playlist(
+        self,
+        url: str,
+        metadata: dict[str, str] | None = None,
+        final_path: str | None = None,
+    ) -> DownloadRecord:
         playlist_url = self._playlist_url(url) or url
         download_id = uuid.uuid4().hex
-        details = {"metadata": metadata or {}, "children": []}
+        details = {"metadata": metadata or {}, "children": [], "final_path": final_path}
         playlist_record = DownloadRecord(
             id=download_id,
             source_kind="youtube_playlist",
@@ -67,7 +74,7 @@ class YouTubeService:
             display_name=playlist_url,
             media_type="music",
             status="expanding",
-            target_path=str(self.paths.music_dir),
+            target_path=final_path or str(self.paths.music_dir),
             details_json=json.dumps(details),
         )
         self.db.upsert_download(playlist_record)
@@ -119,7 +126,12 @@ class YouTubeService:
             child_metadata = {**resolved_metadata}
             if entry.get("title") and not child_metadata.get("title"):
                 child_metadata["title"] = entry["title"]
-            child = self._create_video_job(child_url, metadata=child_metadata, parent_id=download_id)
+            child = self._create_video_job(
+                child_url,
+                metadata=child_metadata,
+                parent_id=download_id,
+                final_path=final_path,
+            )
             children.append({"id": child.id, "title": child.display_name, "url": child_url})
 
         status = "queued" if children else "error"
@@ -181,6 +193,7 @@ class YouTubeService:
 
         details = self._load_details(record)
         override_metadata = details.get("metadata", {})
+        requested_path = details.get("final_path")
         ffmpeg_available = shutil.which("ffmpeg") is not None
 
         def progress_hook(payload: dict) -> None:
@@ -238,7 +251,7 @@ class YouTubeService:
                     )
                     return
                 metadata = self._resolve_metadata(info, override_metadata)
-                missing = [field for field in ("artist", "album") if not metadata.get(field)]
+                missing = [] if requested_path else [field for field in ("artist", "album") if not metadata.get(field)]
                 if missing:
                     details["metadata"] = metadata
                     details["metadata_request_sent"] = True
@@ -260,9 +273,17 @@ class YouTubeService:
                         self.db.add_chat_message("assistant", message, model=None)
                     return
 
-                target_dir = self.paths.music_dir / self._sanitize(metadata["artist"]) / self._sanitize(metadata["album"])
+                requested = Path(requested_path).expanduser() if requested_path else None
+                if requested and requested.suffix:
+                    target_dir = requested.parent
+                    title = self._sanitize(requested.stem)
+                elif requested:
+                    target_dir = requested
+                    title = self._sanitize(metadata.get("title") or info.get("title") or "audio")
+                else:
+                    target_dir = self.paths.music_dir / self._sanitize(metadata["artist"]) / self._sanitize(metadata["album"])
+                    title = self._sanitize(metadata.get("title") or info.get("title") or "musica")
                 target_dir.mkdir(parents=True, exist_ok=True)
-                title = self._sanitize(metadata.get("title") or info.get("title") or "musica")
                 ydl.params["outtmpl"] = {"default": str(target_dir / f"{title}.%(ext)s")}
                 info = ydl.extract_info(record.source_value, download=True)
                 final_name = ydl.prepare_filename(info)

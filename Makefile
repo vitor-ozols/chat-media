@@ -3,10 +3,11 @@ CONTAINER ?= chat-media
 BASE_PATH ?= chat
 DATA_DIR ?= $(CURDIR)/data
 MUSIC_DIR ?= /mnt/sata/musics
-MOVIES_DIR ?= /mnt/sata/streamlito/downloads
+MOVIES_DIR = /mnt/sata/movies
 DOWNLOADS_DIR ?= $(CURDIR)/downloads
+DOCKER ?= sudo docker
 
-.PHONY: build start stop restart logs shell remove ps
+.PHONY: build start up stop restart logs shell remove ps
 
 build:
 	mkdir -p "$(DATA_DIR)" "$(MUSIC_DIR)" "$(MOVIES_DIR)" "$(DOWNLOADS_DIR)"
@@ -15,7 +16,7 @@ build:
 	MOVIES_DIR="$(MOVIES_DIR)" \
 	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
 	BASE_PATH="$(BASE_PATH)" \
-	docker compose build $(SERVICE)
+	$(DOCKER) compose build $(SERVICE)
 
 start:
 	mkdir -p "$(DATA_DIR)" "$(MUSIC_DIR)" "$(MOVIES_DIR)" "$(DOWNLOADS_DIR)"
@@ -24,7 +25,9 @@ start:
 	MOVIES_DIR="$(MOVIES_DIR)" \
 	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
 	BASE_PATH="$(BASE_PATH)" \
-	docker compose up -d --build $(SERVICE)
+	$(DOCKER) compose up -d --build $(SERVICE)
+
+up: start
 
 stop:
 	DATA_DIR="$(DATA_DIR)" \
@@ -32,7 +35,7 @@ stop:
 	MOVIES_DIR="$(MOVIES_DIR)" \
 	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
 	BASE_PATH="$(BASE_PATH)" \
-	docker compose stop $(SERVICE)
+	$(DOCKER) compose stop $(SERVICE)
 
 restart:
 	DATA_DIR="$(DATA_DIR)" \
@@ -40,13 +43,13 @@ restart:
 	MOVIES_DIR="$(MOVIES_DIR)" \
 	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
 	BASE_PATH="$(BASE_PATH)" \
-	docker compose restart $(SERVICE)
+	$(DOCKER) compose restart $(SERVICE)
 
 logs:
-	docker logs -f $(CONTAINER)
+	$(DOCKER) logs -f $(CONTAINER)
 
 shell:
-	docker exec -it $(CONTAINER) bash
+	$(DOCKER) exec -it $(CONTAINER) bash
 
 remove:
 	DATA_DIR="$(DATA_DIR)" \
@@ -54,7 +57,7 @@ remove:
 	MOVIES_DIR="$(MOVIES_DIR)" \
 	DOWNLOADS_DIR="$(DOWNLOADS_DIR)" \
 	BASE_PATH="$(BASE_PATH)" \
-	docker compose rm -sf $(SERVICE)
+	$(DOCKER) compose rm -sf $(SERVICE)
 
 ps:
-	docker ps --filter name=$(CONTAINER)
+	$(DOCKER) ps --filter name=$(CONTAINER)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,27 +27,90 @@ def _items(obj: Any, *names: str) -> list[Any]:
     return list(value or [])
 
 
+def _dump(obj: Any) -> Any:
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="json")
+        except TypeError:
+            return obj.model_dump()
+    return obj
+
+
+def _unwrap_root(obj: Any) -> Any:
+    obj = _dump(obj)
+    while isinstance(obj, dict) and set(obj) == {"root"}:
+        obj = obj["root"]
+    return obj
+
+
+def _text_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
 def _history_messages(response: Any) -> list[dict[str, str]]:
-    dumped = response.model_dump() if hasattr(response, "model_dump") else response
+    dumped = _dump(response)
     thread = _value(dumped, "thread", default=dumped)
     messages: list[dict[str, str]] = []
     for turn in _items(thread, "turns"):
+        assistant_candidates: list[tuple[str, str]] = []
         for item in _items(turn, "items"):
+            item = _unwrap_root(item)
             kind = _value(item, "type")
             if kind == "userMessage":
                 chunks = []
                 for content in _items(item, "content"):
+                    content = _unwrap_root(content)
                     text = _value(content, "text")
                     if text:
                         chunks.append(str(text))
                 if chunks:
                     messages.append({"role": "user", "content": "\n".join(chunks)})
             elif kind == "agentMessage":
-                phase = str(_value(item, "phase", default=""))
+                raw_phase = _value(item, "phase", default="")
+                phase = str(getattr(raw_phase, "value", raw_phase) or "")
                 text = _value(item, "text")
-                if phase.endswith("final_answer") and text:
-                    messages.append({"role": "assistant", "content": str(text)})
+                if text:
+                    assistant_candidates.append((phase, str(text)))
+        final_answers = [text for phase, text in assistant_candidates if phase.endswith("final_answer")]
+        if final_answers:
+            messages.append({"role": "assistant", "content": final_answers[-1]})
+        elif assistant_candidates:
+            # Older runtimes did not persist the message phase. The final agent
+            # message in a completed turn is the best available representation.
+            messages.append({"role": "assistant", "content": assistant_candidates[-1][1]})
     return messages
+
+
+def _skill_name(skill_file: Path) -> str:
+    try:
+        head = skill_file.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return skill_file.parent.name
+    match = re.search(r"(?m)^name:\s*[\"']?([^\n\"']+)", head)
+    return match.group(1).strip() if match else skill_file.parent.name
+
+
+def _skill_roots(cwd: Path) -> list[Path]:
+    roots: list[Path] = []
+    current = cwd.resolve()
+    while True:
+        roots.append(current / ".agents" / "skills")
+        if current.parent == current:
+            break
+        current = current.parent
+
+    home = Path.home()
+    roots.extend(
+        [
+            home / ".agents" / "skills",
+            home / ".codex" / "skills",
+            Path("/etc/codex/skills"),
+        ]
+    )
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        roots.append(Path(codex_home).expanduser() / "skills")
+    return roots
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +147,15 @@ class CodexSDK:
         self.cwd = str(cwd.resolve())
 
     @staticmethod
+    def _client():
+        from openai_codex import Codex, CodexConfig
+
+        codex_bin = os.environ.get("CODEX_BIN")
+        if codex_bin and Path(codex_bin).is_file():
+            return Codex(CodexConfig(codex_bin=codex_bin))
+        return Codex()
+
+    @staticmethod
     def _sandbox(name: str):
         from openai_codex import Sandbox
 
@@ -103,10 +177,8 @@ class CodexSDK:
     def list_models(self) -> list[dict[str, Any]]:
         if not self.is_available():
             return []
-        from openai_codex import Codex
-
         try:
-            with Codex() as client:
+            with self._client() as client:
                 response = client.models()
         except Exception as exc:
             _raise_known_sdk_error(exc)
@@ -120,9 +192,36 @@ class CodexSDK:
                     "id": model_id,
                     "name": str(_value(row, "display_name", default=model_id)),
                     "default": bool(_value(row, "is_default", default=False)),
+                    "default_effort": _text_value(
+                        _value(row, "default_reasoning_effort", default="medium")
+                    ),
+                    "efforts": [
+                        _text_value(_value(option, "reasoning_effort", default=option))
+                        for option in _items(row, "supported_reasoning_efforts")
+                    ],
                 }
             )
         return models
+
+    def list_skills(self) -> list[dict[str, str]]:
+        found: dict[str, str] = {}
+        visited: set[Path] = set()
+        for root in _skill_roots(Path(self.cwd)):
+            try:
+                resolved = root.resolve()
+            except OSError:
+                resolved = root
+            if resolved in visited or not root.is_dir():
+                continue
+            visited.add(resolved)
+            try:
+                skill_files = root.rglob("SKILL.md")
+                for skill_file in skill_files:
+                    name = _skill_name(skill_file)
+                    found.setdefault(name, str(skill_file.resolve()))
+            except OSError:
+                continue
+        return [{"name": name, "path": path} for name, path in sorted(found.items())]
 
     def list_threads(
         self,
@@ -132,11 +231,11 @@ class CodexSDK:
     ) -> list[dict[str, str]]:
         if not self.is_available():
             return []
-        from openai_codex import Codex
-
         try:
-            with Codex() as client:
-                response = client.thread_list(cwd=self.cwd, limit=limit)
+            with self._client() as client:
+                # Do not filter by cwd: the mounted Codex home contains useful
+                # conversations created by the machine in other workspaces.
+                response = client.thread_list(limit=limit)
         except Exception as exc:
             _raise_known_sdk_error(exc)
             raise
@@ -146,7 +245,14 @@ class CodexSDK:
             thread_id = str(_value(row, "id", "thread_id", default="?"))
             name = str(_value(row, "name", "title", "preview", default="Untitled"))
             name = " ".join(name.split())[:64] or "Untitled"
-            threads.append({"id": thread_id, "name": name})
+            threads.append(
+                {
+                    "id": thread_id,
+                    "name": name,
+                    "preview": str(_value(row, "preview", default="")),
+                    "updated_at": str(_value(row, "updated_at", default="")),
+                }
+            )
         return threads
 
     def read_thread(
@@ -157,15 +263,11 @@ class CodexSDK:
     ) -> list[dict[str, str]]:
         if not self.is_available() or not thread_id:
             return []
-        from openai_codex import Codex
-
         try:
-            with Codex() as client:
-                kwargs: dict[str, Any] = {"cwd": self.cwd, "sandbox": self._sandbox(sandbox)}
-                if model:
-                    kwargs["model"] = model
-                thread = client.thread_resume(thread_id, **kwargs)
-                response = thread.read(include_turns=True)
+            with self._client() as client:
+                # Reading directly avoids acquiring a writer, so even a thread
+                # currently open in Codex can be displayed in History.
+                response = client._client.thread_read(thread_id, include_turns=True)
         except Exception as exc:
             _raise_known_sdk_error(exc)
             raise
@@ -179,15 +281,23 @@ class CodexSDK:
         effort: str = "medium",
         sandbox: str = "write",
     ) -> CodexAskResult:
-        from openai_codex import Codex
+        from openai_codex import SkillInput, TextInput
 
         try:
-            with Codex() as client:
+            with self._client() as client:
                 kwargs: dict[str, Any] = {"cwd": self.cwd, "sandbox": self._sandbox(sandbox)}
                 if model:
                     kwargs["model"] = model
                 if thread_id:
-                    thread = client.thread_resume(thread_id, **kwargs)
+                    try:
+                        thread = client.thread_resume(thread_id, **kwargs)
+                    except Exception as exc:
+                        if "active writer" not in str(exc).lower():
+                            raise
+                        # A conversation open in another Codex process cannot
+                        # acquire a second writer. Fork it so the user can keep
+                        # the full context without interrupting that process.
+                        thread = client.thread_fork(thread_id, **kwargs)
                 else:
                     thread = client.thread_start(**kwargs)
 
@@ -198,7 +308,18 @@ class CodexSDK:
                 }
                 if model:
                     turn_kwargs["model"] = model
-                result = thread.turn(prompt, **turn_kwargs).run()
+                skills = {item["name"]: item["path"] for item in self.list_skills()}
+                mentioned = []
+                for name in re.findall(r"(?<![\w$])\$([A-Za-z0-9_-]+)", prompt):
+                    if name in skills and name not in mentioned:
+                        mentioned.append(name)
+                run_input: Any = prompt
+                if mentioned:
+                    run_input = [
+                        *(SkillInput(name=name, path=skills[name]) for name in mentioned),
+                        TextInput(prompt),
+                    ]
+                result = thread.run(run_input, **turn_kwargs)
         except Exception as exc:
             _raise_known_sdk_error(exc)
             raise

@@ -10,6 +10,13 @@ from .service import TorrentService
 from .utils import format_bytes, format_eta, format_rate, format_timestamp, status_css_class, status_label
 
 
+DOWNLOAD_DESTINATIONS = {
+    "Músicas": "/mnt/sata/musics",
+    "Séries": "/mnt/sata/series",
+    "Filmes": "/mnt/sata/movies",
+}
+
+
 @st.cache_resource(show_spinner=False)
 def get_service() -> TorrentService:
     return TorrentService(ensure_app_paths(Path.cwd()))
@@ -36,7 +43,7 @@ def compute_metrics(records: list[TorrentRecord]) -> dict[str, int]:
 
 def render_sidebar(service: TorrentService) -> None:
     engine = service.get_engine_snapshot()
-    st.sidebar.header("Painel")
+    st.sidebar.markdown("### Cliente BitTorrent")
     if engine.available:
         st.sidebar.success(engine.message)
     else:
@@ -58,6 +65,8 @@ def render_sidebar(service: TorrentService) -> None:
 
 def render_add_form(service: TorrentService) -> None:
     default_dir = service.get_default_download_dir()
+    destination_paths = list(DOWNLOAD_DESTINATIONS.values())
+    selected_index = destination_paths.index(default_dir) if default_dir in destination_paths else 2
     with st.form("add-torrent-form", clear_on_submit=False):
         left, right = st.columns([1.6, 1.0])
         with left:
@@ -72,9 +81,15 @@ def render_add_form(service: TorrentService) -> None:
                 accept_multiple_files=True,
             )
         with right:
-            st.caption("Destino atual")
-            st.code(default_dir)
-            st.caption("Altere o destino no bloco `Destino de download` acima.")
+            download_dir = st.selectbox(
+                "Destino final",
+                options=destination_paths,
+                index=selected_index,
+                format_func=lambda path: next(
+                    label for label, destination in DOWNLOAD_DESTINATIONS.items() if destination == path
+                ),
+            )
+            st.caption(download_dir)
             start_paused = st.checkbox("Adicionar pausado", value=False)
             submit = st.form_submit_button("Adicionar downloads", width="stretch")
 
@@ -87,11 +102,12 @@ def render_add_form(service: TorrentService) -> None:
         st.warning("Informe ao menos um magnet ou arquivo .torrent.")
         return
 
+    selected_dir = service.set_default_download_dir(download_dir)
     added = 0
     failed = 0
 
     if magnets:
-        records = service.add_magnets(magnets, download_dir=default_dir, start_paused=start_paused)
+        records = service.add_magnets(magnets, download_dir=selected_dir, start_paused=start_paused)
         added += sum(record.status != TorrentStatus.ERROR for record in records)
         failed += sum(record.status == TorrentStatus.ERROR for record in records)
 
@@ -99,7 +115,7 @@ def render_add_form(service: TorrentService) -> None:
         record = service.add_torrent_file(
             filename=file.name,
             payload=file.getvalue(),
-            download_dir=default_dir,
+            download_dir=selected_dir,
             start_paused=start_paused,
         )
         if record.status == TorrentStatus.ERROR:
@@ -120,34 +136,12 @@ def render_torrent_card(service: TorrentService, record: TorrentRecord) -> None:
         f"{status_label(record.status)}</span>"
     )
     with st.container(border=True):
-        top_left, top_right = st.columns([1.8, 1.0])
-        with top_left:
-            st.markdown(status_html, unsafe_allow_html=True)
-            st.markdown(f"### {record.name}")
-            st.markdown(
-                f"<p class='muted'>Atualizado em {format_timestamp(record.updated_at)}</p>",
-                unsafe_allow_html=True,
-            )
-        with top_right:
-            button_cols = st.columns(4)
-            if record.status in {TorrentStatus.PAUSED, TorrentStatus.COMPLETED, TorrentStatus.ERROR}:
-                if button_cols[0].button("Retomar", key=f"resume-{record.id}", width="stretch"):
-                    service.resume_torrent(record.id)
-                    st.rerun()
-            else:
-                if button_cols[0].button("Pausar", key=f"pause-{record.id}", width="stretch"):
-                    service.pause_torrent(record.id)
-                    st.rerun()
-
-            if button_cols[1].button("Revalidar", key=f"check-{record.id}", width="stretch"):
-                service.force_recheck(record.id)
-                st.rerun()
-            if button_cols[2].button("Remover", key=f"remove-{record.id}", width="stretch"):
-                service.remove_torrent(record.id, delete_files=False)
-                st.rerun()
-            if button_cols[3].button("Excluir dados", key=f"delete-{record.id}", width="stretch"):
-                service.remove_torrent(record.id, delete_files=True)
-                st.rerun()
+        st.markdown(status_html, unsafe_allow_html=True)
+        st.markdown(f"### {record.name}")
+        st.markdown(
+            f"<p class='muted'>Atualizado em {format_timestamp(record.updated_at)}</p>",
+            unsafe_allow_html=True,
+        )
 
         st.progress(record.progress, text=f"{record.progress * 100:.1f}%")
 
@@ -166,6 +160,31 @@ def render_torrent_card(service: TorrentService, record: TorrentRecord) -> None:
             st.caption(f"Info hash: {record.info_hash}")
         if record.error_message:
             st.error(record.error_message)
+
+        button_cols = st.columns([1, 1, 1, 1, 1.25])
+        if record.status in {TorrentStatus.PAUSED, TorrentStatus.COMPLETED, TorrentStatus.ERROR}:
+            if button_cols[0].button("Retomar", key=f"resume-{record.id}", width="stretch"):
+                service.resume_torrent(record.id)
+                st.rerun()
+        else:
+            if button_cols[0].button("Pausar", key=f"pause-{record.id}", width="stretch"):
+                service.pause_torrent(record.id)
+                st.rerun()
+
+        if button_cols[1].button("Revalidar", key=f"check-{record.id}", width="stretch"):
+            service.force_recheck(record.id)
+            st.rerun()
+        if button_cols[2].button("Reiniciar", key=f"restart-{record.id}", width="stretch"):
+            service.restart_torrent(record.id)
+            st.rerun()
+        if button_cols[3].button("Remover", key=f"remove-{record.id}", width="stretch"):
+            service.remove_torrent(record.id, delete_files=False)
+            st.rerun()
+        with button_cols[4].popover("Excluir dados", width="stretch"):
+            st.warning("Isso remove o torrent e os arquivos baixados.")
+            if st.button("Confirmar exclusão", key=f"delete-{record.id}", type="primary"):
+                service.remove_torrent(record.id, delete_files=True)
+                st.rerun()
 
         if st.toggle("Mostrar arquivos", key=f"files-{record.id}"):
             file_rows = service.list_files(record.id)
@@ -271,24 +290,14 @@ def render_history(service: TorrentService) -> None:
     )
 
 
-def render_page() -> None:
-    service = get_service()
+def render_page(service: TorrentService | None = None) -> None:
+    service = service or get_service()
     render_sidebar(service)
 
-    top_a, top_b = st.columns([1.4, 1.0])
-    with top_a:
-        render_download_dir_controls(service)
+    with st.expander("Adicionar torrent", expanded=False, icon=":material/add_circle:"):
         render_add_form(service)
-    with top_b:
-        st.subheader("Resumo")
-        records = service.list_torrents(include_removed=True)
-        metrics = compute_metrics(records)
-        st.write(f"Downloads acumulados: `{format_bytes(metrics['total_downloaded'])}`")
-        st.write(f"Uploads acumulados: `{format_bytes(metrics['total_uploaded'])}`")
-        st.write(f"Destino padrao: `{service.get_default_download_dir()}`")
-        st.write(f"Raiz do projeto: `{Path.cwd()}`")
 
-    tabs = st.tabs(["Downloads", "Historico"])
+    tabs = st.tabs(["Downloads", "Atividade"])
     with tabs[0]:
         render_dashboard(service)
     with tabs[1]:

@@ -16,9 +16,6 @@ CODEX_COMMANDS = {
     "/threads": "Lista as ultimas threads do Codex.",
     "/resume THREAD_ID": "Retoma uma thread existente do Codex.",
     "/new": "Inicia um novo chat.",
-    "/skills": "Lista as skills locais registradas.",
-    "/pointbot": "Mostra como acionar a skill global `pointbot-orcamentos`; use `/pointbot pdf` para baixar o PDF mais recente no chat.",
-    "/downloads": "Resume a fila de downloads.",
 }
 
 
@@ -72,7 +69,7 @@ class CodexRuntime:
             return (
                 "Codex SDK/CLI: indisponivel.\n"
                 f"- Motivo: {status.auth_hint}\n"
-                "- As skills locais continuam funcionando para YouTube, torrents e historico."
+                "- A API de downloads e o cliente BitTorrent continuam independentes do Codex."
             )
         return (
             "Codex SDK/CLI: disponivel.\n"
