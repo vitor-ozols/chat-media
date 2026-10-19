@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def _value(obj: Any, *names: str, default: Any = None) -> Any:
@@ -81,6 +82,65 @@ def _history_messages(response: Any) -> list[dict[str, str]]:
     return messages
 
 
+def _rollout_messages(path: str | None) -> list[dict[str, str]]:
+    """Read-only fallback for paginated rollouts unsupported by thread/read.
+
+    Only inspect session files inside this application's Codex home. Completed
+    item events exclude injected developer context and tool/reasoning output.
+    """
+    if not path:
+        return []
+    home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).resolve()
+    rollout = Path(path).resolve()
+    if rollout.suffix != ".jsonl" or not any(
+        rollout.is_relative_to(home / folder) for folder in ("sessions", "archived_sessions")
+    ):
+        return []
+    turns: dict[str, dict[str, Any]] = {}
+    legacy: list[dict[str, Any]] = []
+    try:
+        with rollout.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # A live writer may not have finished its last line.
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload", {})
+                if not isinstance(payload, dict):
+                    continue
+                if record.get("type") == "event_msg" and payload.get("type") == "item_completed":
+                    item = payload.get("item", {})
+                    kind = item.get("type")
+                    if kind not in ("UserMessage", "AgentMessage"):
+                        continue
+                    converted = dict(item, type="userMessage" if kind == "UserMessage" else "agentMessage")
+                    if kind == "AgentMessage":
+                        converted["text"] = "\n".join(
+                            str(chunk["text"]) for chunk in item.get("content", []) if chunk.get("text")
+                        )
+                    turn = turns.setdefault(str(payload.get("turn_id", "")), {"items": []})
+                    turn["items"].append(converted)
+                elif record.get("type") == "response_item" and payload.get("type") == "message":
+                    role = payload.get("role")
+                    if role not in ("user", "assistant"):
+                        continue
+                    content = payload.get("content", [])
+                    if role == "user":
+                        legacy.append({"items": [{"type": "userMessage", "content": content}]})
+                    else:
+                        if not legacy:
+                            legacy.append({"items": []})
+                        legacy[-1]["items"].append({
+                            "type": "agentMessage", "phase": payload.get("phase", ""),
+                            "text": "\n".join(str(chunk["text"]) for chunk in content if chunk.get("text")),
+                        })
+    except FileNotFoundError:
+        return []
+    return _history_messages({"thread": {"turns": list(turns.values()) if turns else legacy}})
+
+
 def _skill_name(skill_file: Path) -> str:
     try:
         head = skill_file.read_text(encoding="utf-8", errors="replace")[:4000]
@@ -130,9 +190,16 @@ class CodexSetupError(RuntimeError):
 def _raise_known_sdk_error(exc: Exception) -> None:
     message = str(exc)
     normalized = message.lower()
+    if "database disk image is malformed" in normalized or "database corruption" in normalized:
+        raise CodexSetupError(
+            "O banco de histórico do Codex está corrompido. Preserve um backup e "
+            "importe as sessões para um CODEX_HOME separado usando "
+            "`python -m media_manager.codex_home SOURCE DESTINATION`. "
+            "Não apague os arquivos de sessões nem o estado compartilhado do host."
+        ) from exc
     if "401" in normalized or "unauthorized" in normalized or "missing bearer" in normalized:
         raise CodexAuthError(
-            "O Codex SDK dentro do Streamlit nao encontrou autenticacao valida. "
+            "O Codex SDK não encontrou autenticação válida. "
             "Defina `OPENAI_API_KEY` no ambiente do `docker compose` ou garanta que o login do Codex esteja disponivel no container."
         ) from exc
     if "readonly database" in normalized or "read-only file system" in normalized or "transportclosederror" in normalized:
@@ -271,7 +338,11 @@ class CodexSDK:
         except Exception as exc:
             _raise_known_sdk_error(exc)
             raise
-        return _history_messages(response)
+        messages = _history_messages(response)
+        if not messages:
+            thread = _value(response, "thread", default=response)
+            messages = _rollout_messages(_value(thread, "path"))
+        return messages
 
     def ask(
         self,
@@ -280,6 +351,8 @@ class CodexSDK:
         model: str | None = None,
         effort: str = "medium",
         sandbox: str = "write",
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_turn: Callable[[Any], None] | None = None,
     ) -> CodexAskResult:
         from openai_codex import SkillInput, TextInput
 
@@ -319,7 +392,39 @@ class CodexSDK:
                         *(SkillInput(name=name, path=skills[name]) for name in mentioned),
                         TextInput(prompt),
                     ]
-                result = thread.run(run_input, **turn_kwargs)
+                if on_event is None:
+                    result = thread.run(run_input, **turn_kwargs)
+                else:
+                    on_event({"type": "thread", "thread_id": str(thread.id)})
+                    turn = thread.turn(run_input, **turn_kwargs)
+                    if on_turn:
+                        on_turn(turn)
+                    final_text = ""
+                    last_text = ""
+                    phases: dict[str, str] = {}
+                    status = ""
+                    error = None
+                    for notification in turn.stream():
+                        method = notification.method
+                        payload = _dump(notification.payload)
+                        event = _progress_event(method, payload, phases)
+                        if event:
+                            on_event(event)
+                            if event["type"] == "message" and "text" in event:
+                                last_text = event["text"]
+                                if event.get("phase") == "final_answer":
+                                    final_text = last_text
+                        if method == "turn/completed":
+                            completed = _value(payload, "turn", default={})
+                            status = _text_value(_value(completed, "status", default=""))
+                            error = _value(completed, "error")
+                    if status == "interrupted":
+                        raise InterruptedError("Execução interrompida.")
+                    if error or status == "failed":
+                        raise RuntimeError(str(error or "Falha na execução do Codex."))
+                    if final_text or last_text:
+                        return CodexAskResult(str(thread.id), final_text or last_text)
+                    raise RuntimeError(f"Turn ended without final response: {status}")
         except Exception as exc:
             _raise_known_sdk_error(exc)
             raise
@@ -328,3 +433,50 @@ class CodexSDK:
         if result.error:
             raise RuntimeError(str(result.error))
         raise RuntimeError(f"Turn ended without final response: {result.status}")
+
+
+def _progress_event(method: str, payload: Any, phases: dict[str, str]) -> dict[str, Any] | None:
+    """Expose public messages and tool activity, never private reasoning deltas."""
+    if method in {"item/started", "item/completed"}:
+        item = _unwrap_root(_value(payload, "item", default={}))
+        kind = _value(item, "type", default="")
+        item_id = str(_value(item, "id", default=kind))
+        done = method == "item/completed"
+        if kind == "agentMessage":
+            phase = _text_value(_value(item, "phase", default=phases.get(item_id, "")))
+            phases[item_id] = phase
+            event = {"type": "message", "id": item_id, "phase": phase}
+            if done:
+                event["text"] = str(_value(item, "text", default=""))
+            return event
+        labels = {
+            "commandExecution": "Executando comando", "fileChange": "Alterando arquivos",
+            "webSearch": "Pesquisando na web", "mcpToolCall": "Usando ferramenta",
+            "dynamicToolCall": "Usando ferramenta", "reasoning": "Analisando o pedido",
+            "contextCompaction": "Organizando o contexto", "imageGeneration": "Gerando imagem",
+            "plan": "Atualizando o plano",
+        }
+        if kind not in labels:
+            return None
+        detail = ""
+        if kind == "commandExecution":
+            detail = str(_value(item, "command", default=""))
+        elif kind == "fileChange":
+            detail = "\n".join(str(_value(c, "path", default="")) for c in _items(item, "changes"))
+        elif kind == "webSearch":
+            detail = str(_value(item, "query", default=""))
+        elif kind in {"mcpToolCall", "dynamicToolCall"}:
+            detail = " · ".join(str(_value(item, key, default="")) for key in ("server", "tool")).strip(" ·")
+        status = _text_value(_value(item, "status", default="completed" if done else "running"))
+        return {"type": "activity", "id": item_id, "label": labels[kind], "detail": detail[:4000],
+                "status": status, "done": done}
+    if method == "item/agentMessage/delta":
+        item_id = str(_value(payload, "itemId", "item_id", default="assistant"))
+        return {"type": "message", "id": item_id, "phase": phases.get(item_id, ""),
+                "delta": str(_value(payload, "delta", default=""))}
+    if method == "turn/plan/updated":
+        return {"type": "plan", "explanation": _value(payload, "explanation", default=""),
+                "steps": [{"step": str(_value(p, "step", default="")),
+                           "status": _text_value(_value(p, "status", default="pending"))}
+                          for p in _items(payload, "plan")]}
+    return None

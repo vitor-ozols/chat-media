@@ -29,13 +29,14 @@ class CodexRuntimeStatus:
 
 class CodexRuntime:
     def status(self) -> CodexRuntimeStatus:
-        executable = shutil.which("codex")
+        configured = os.environ.get("CODEX_BIN")
+        executable = (shutil.which(configured) if configured else None) or shutil.which("codex")
         if not executable:
             return CodexRuntimeStatus(
                 available=False,
                 executable=None,
                 version=None,
-                auth_hint="`codex` nao foi encontrado no PATH do processo Streamlit.",
+                auth_hint="`codex` não foi encontrado no PATH do serviço.",
             )
 
         version = None

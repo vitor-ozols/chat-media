@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+.streamlit/secrets.toml
+data
+media
+downloads
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151716">
+  <meta name="description" content="Seu agente e seus downloads, em um só lugar.">
+  <title>Chat Media</title>
+  <link rel="icon" href="{{ url_for('web.static', filename='mark.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('web.static', filename='app.css') }}">
+  <script type="module" src="{{ url_for('web.static', filename='app.js') }}"></script>
+</head>
+<body data-api="{{ api_base }}">
+  <a class="skip-link" href="#prompt">Ir para a mensagem</a>
+  <div id="sidebar-backdrop" class="backdrop" hidden></div>
+  <aside id="sidebar" class="sidebar" aria-label="Navegação">
+    <a class="brand" href="#" aria-label="Chat Media, início"><span class="brand-mark">m<span>↗</span></span><span>chat<span class="brand-light">media</span><small>SEU ESPAÇO DE TRABALHO</small></span></a>
+    <button id="new-chat" class="new-chat"><span>+</span> Nova conversa <kbd>Alt N</kbd></button>
+    <nav class="main-nav" aria-label="Áreas">
+      <button id="chat-nav" class="nav-item active"><span aria-hidden="true">◌</span> Conversas <span class="nav-arrow">↗</span></button>
+      <button id="torrents-nav" class="nav-item"><span aria-hidden="true">↓</span> Downloads</button>
+    </nav>
+    <div class="history-heading"><span>RECENTES</span><button id="refresh-threads" class="icon-button" aria-label="Atualizar conversas" title="Atualizar conversas">↻</button></div>
+    <label class="search-box"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></svg><input id="thread-search" type="search" placeholder="Buscar conversa…" aria-label="Buscar conversa"></label>
+    <div id="threads" class="threads" aria-live="polite"><p class="sidebar-hint">Carregando conversas…</p></div>
+    <div class="sidebar-footer"><span class="agent-avatar">C</span><div>Codex<small id="sdk-status">Conectando ao ambiente</small></div><button id="settings-open" class="icon-button" aria-label="Abrir configurações" title="Configurações">⚙</button></div>
+  </aside>
+  <main class="workspace">
+    <header class="topbar">
+      <button id="menu-toggle" class="icon-button mobile-menu" aria-label="Abrir menu" aria-expanded="false" aria-controls="sidebar">☰</button>
+      <div class="page-heading"><span class="eyebrow">WORKSPACE / <span id="section-label">CONVERSAS</span></span><h1 id="page-title">Nova conversa</h1></div>
+      <span id="connection" class="connection"><span class="status-dot"></span><span id="connection-label">Conectando</span></span>
+    </header>
+    <section id="chat-view" class="chat-view" aria-label="Chat com o Codex">
+      <div id="conversation" class="conversation" tabindex="0" aria-label="Mensagens da conversa">
+        <div id="welcome" class="welcome">
+          <div class="welcome-label"><span class="status-dot"></span> UM POUCO MENOS DE TRABALHO</div>
+          <h2>Uma ideia.<br>Vamos <em>fazer acontecer.</em></h2>
+          <p>Peça ao seu agente. Acompanhe cada etapa.<br>Continue de onde parou.</p>
+          <div class="suggestions">
+            <button data-prompt="Confira meus downloads e me diga o que está em andamento."><span class="suggestion-icon">↓</span><strong>Meus downloads</strong><span>O que está acontecendo na fila?</span><b aria-hidden="true">↗</b></button>
+            <button data-prompt="Me ajude a organizar minha biblioteca de mídia. Primeiro, confira como ela está organizada."><span class="suggestion-icon">▤</span><strong>Organizar a biblioteca</strong><span>Um lugar para cada arquivo.</span><b aria-hidden="true">↗</b></button>
+            <button id="skills-suggestion"><span class="suggestion-icon">✳</span><strong>Explorar skills</strong><span>Descubra o que seu agente faz.</span><b aria-hidden="true">↗</b></button>
+          </div>
+          <div class="welcome-footnote"><span>↳</span> Comandos, buscas e arquivos aparecem aqui, em tempo real.</div>
+        </div>
+        <div id="messages" class="messages"></div>
+      </div>
+      <button id="jump-bottom" class="jump-bottom" hidden>↓ Novas mensagens</button>
+      <div class="composer-area">
+        <div id="run-status" class="run-status" role="status" hidden><span class="spinner"></span><span id="run-label">Preparando execução</span><span id="run-time">0s</span></div>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="prompt">Mensagem para o Codex</label>
+          <textarea id="prompt" rows="1" maxlength="100000" placeholder="O que vamos fazer?" enterkeyhint="send"></textarea>
+          <div class="composer-toolbar"><div class="composer-options"><label class="model-picker"><span aria-hidden="true">◈</span><select id="model" aria-label="Modelo do agente"><option value="">Padrão do Codex</option></select></label><button type="button" id="composer-settings" class="subtle-button" aria-label="Configurar raciocínio e acesso">Ajustes</button></div><button id="send" class="send-button" type="submit" aria-label="Enviar mensagem" title="Enviar mensagem">↑</button><button id="stop" class="stop-button" type="button" hidden><span aria-hidden="true">■</span> Parar</button></div>
+        </form>
+        <div class="composer-hint"><span><kbd>Enter</kbd> envia <span class="hint-separator">·</span> <kbd>Shift Enter</kbd> quebra linha</span><span>Feito com Codex <span class="tiny-star">✳</span></span></div>
+      </div>
+    </section>
+    <section id="downloads-view" class="downloads-view" aria-label="Gerenciar downloads" hidden>
+      <div class="downloads-header"><div><span class="eyebrow">SUA FILA, EM DIA</span><h2>Downloads</h2><p>Adicione um magnet ou arquivo e acompanhe por aqui.</p></div><button id="add-download-open" class="primary-button">＋ Adicionar torrent</button></div>
+      <div id="download-stats" class="download-stats"></div>
+      <div class="download-filter"><label class="search-box"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></svg><input id="download-search" type="search" placeholder="Buscar download…" aria-label="Buscar download"></label><label><span class="sr-only">Filtrar por status</span><select id="download-filter"><option value="all">Todos os status</option><option value="active">Em andamento</option><option value="paused">Pausados</option><option value="completed">Concluídos</option><option value="error">Com erro</option></select></label><button id="refresh-downloads" class="subtle-button">↻ Atualizar</button></div>
+      <p id="engine-notice" class="notice" hidden></p>
+      <div id="download-list" class="download-list" aria-live="polite"></div>
+      <details class="engine-events"><summary>Atividade do motor</summary><div id="engine-events"></div></details>
+    </section>
+  </main>
+  <dialog id="settings-dialog" class="dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">DO SEU JEITO</span><h2>Configurações</h2></div><button class="icon-button" data-close-dialog aria-label="Fechar configurações">×</button></div>
+    <label class="field">Raciocínio<select id="effort"><option value="low">Baixo · respostas mais rápidas</option><option value="medium">Médio · equilibrado</option><option value="high">Alto · tarefas complexas</option><option value="xhigh">Muito alto</option></select></label>
+    <label class="field">Acesso ao sistema<select id="sandbox"><option value="read">Somente leitura</option><option value="write">Leitura e escrita no projeto</option><option value="full">Acesso completo</option></select></label>
+    <p class="field-hint">As configurações se aplicam à próxima mensagem.</p>
+    <div class="skills-heading"><h3>Skills disponíveis</h3><span id="skills-count" class="count-badge">0</span></div><p class="field-hint">Selecione uma skill para mencioná-la na mensagem.</p><div id="skills-list" class="skills-list"></div>
+    <button class="primary-button dialog-done" data-close-dialog>Pronto</button>
+  </dialog>
+  <dialog id="download-dialog" class="dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">MAIS UM PARA A FILA</span><h2>Adicionar torrent</h2></div><button class="icon-button" data-close-dialog aria-label="Fechar">×</button></div>
+    <form id="download-form"><label class="field">Links magnet<textarea id="magnets" rows="4" placeholder="magnet:?xt=urn:btih:…&#10;Um link por linha"></textarea></label><label class="field">Ou selecione arquivos .torrent<input id="torrent-files" type="file" accept=".torrent" multiple></label><label class="field">Pasta de destino<input id="download-dir" required placeholder="/app/downloads"></label><label class="checkbox-field"><input id="start-paused" type="checkbox"> Adicionar pausado</label><p id="download-form-error" class="form-error" role="alert"></p><button type="submit" class="primary-button dialog-done">Adicionar à fila</button></form>
+  </dialog>
+  <dialog id="files-dialog" class="dialog"><div class="dialog-heading"><h2>Arquivos do torrent</h2><button class="icon-button" data-close-dialog aria-label="Fechar">×</button></div><div id="torrent-file-list"></div></dialog>
+  <div id="toast" class="toast" role="alert" hidden></div>
+  <noscript>Ative o JavaScript para conversar com o agente e gerenciar seus downloads.</noscript>
+</body>
+</html>

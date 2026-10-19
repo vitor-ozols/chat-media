@@ -2,9 +2,8 @@ FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    BASE_PATH=chat \
+    PORT=8501
 
 WORKDIR /app
 
@@ -19,8 +18,6 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
     && pip install -r /app/requirements.txt
 
-ENV STREAMLIT_SERVER_BASE_URL_PATH=torrent
-
 COPY . /app
 
 RUN mkdir -p /app/data /app/media/music /app/media/movies /app/downloads \
@@ -34,6 +31,6 @@ EXPOSE 8501 5000
 VOLUME ["/app/data", "/app/media/music", "/app/media/movies", "/app/downloads"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:8501/${STREAMLIT_SERVER_BASE_URL_PATH}/_stcore/health" || exit 1
+  CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
 
 CMD ["python", "launcher.py"]

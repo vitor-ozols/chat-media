@@ -4,9 +4,8 @@ import json
 import re
 import uuid
 from pathlib import Path
+from functools import lru_cache
 from urllib.parse import parse_qs, unquote, urlparse
-
-import streamlit as st
 
 from torrent_manager.config import ensure_app_paths
 from torrent_manager.models import TorrentRecord
@@ -708,6 +707,6 @@ class MediaService:
         return cleaned.strip(" .,:;")
 
 
-@st.cache_resource(show_spinner=False)
+@lru_cache(maxsize=1)
 def get_media_service() -> MediaService:
     return MediaService(Path.cwd())

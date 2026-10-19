@@ -111,6 +111,9 @@ def create_app(service: MediaService | None = None, root: Path | None = None) ->
 
         return jsonify({"downloads": created}), 201
 
+    from web import register_web
+
+    register_web(app, media_service)
     return app
 
 
