@@ -1,4 +1,5 @@
 import { markdown } from './markdown.js';
+import { initWiki, showWiki, wikiTitle } from './wiki.js';
 
 const $ = (id) => document.getElementById(id);
 const apiBase = document.body.dataset.api;
@@ -73,7 +74,7 @@ function scrollToBottom(force = false) {
 
 function titleForThread() { return state.threads.find((thread) => thread.id === state.thread)?.name || (state.thread ? 'Conversa' : 'Nova conversa'); }
 function updateTitle() {
-  const title = state.view === 'downloads' ? 'Downloads' : titleForThread();
+  const title = state.view === 'downloads' ? 'Downloads' : state.view.startsWith('wiki') ? wikiTitle(state.view) : titleForThread();
   $('page-title').textContent = title;
   document.title = `${title} · Chat Media`;
 }
@@ -192,14 +193,18 @@ async function openThread(threadId, recovery = null) {
 
 function route() {
   const hash = location.hash.slice(1);
-  const view = hash === 'torrents' || (!hash && location.pathname.endsWith('/torrents')) ? 'downloads' : 'chat';
+  const view = hash === 'torrents' || (!hash && location.pathname.endsWith('/torrents')) ? 'downloads'
+    : hash === 'wiki-chat' ? 'wiki-chat'
+    : hash.startsWith('wiki') || (!hash && location.pathname.endsWith('/wiki')) ? 'wiki' : 'chat';
   state.view = view;
-  $('chat-view').hidden = view !== 'chat'; $('downloads-view').hidden = view !== 'downloads';
-  $('chat-nav').classList.toggle('active', view === 'chat'); $('torrents-nav').classList.toggle('active', view === 'downloads');
-  $('section-label').textContent = view === 'downloads' ? 'DOWNLOADS' : 'CONVERSAS';
+  const views = {chat: ['chat-view', 'chat-nav', 'CONVERSAS'], downloads: ['downloads-view', 'torrents-nav', 'DOWNLOADS'],
+    'wiki-chat': ['wiki-chat-view', 'wiki-chat-nav', 'PERGUNTE À WIKI'], wiki: ['wiki-view', 'wiki-nav', 'WIKIPÉDIA']};
+  for (const [name, [section, nav]] of Object.entries(views)) { $(section).hidden = name !== view; $(nav).classList.toggle('active', name === view); }
+  $('section-label').textContent = views[view][2];
   setSidebar(false);
   clearTimeout(state.downloadTimer);
   if (view === 'downloads') refreshDownloads();
+  else if (view.startsWith('wiki')) showWiki(view, hash);
   else if (!state.busy && hash.startsWith('thread=')) {
     let threadId;
     try { threadId = decodeURIComponent(hash.slice(7)); } catch { return; }
@@ -507,6 +512,9 @@ $('new-chat').addEventListener('click', newChat);
 document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); if (!state.busy) newChat(); else { location.hash = state.thread ? `thread=${encodeURIComponent(state.thread)}` : 'chat'; route(); } });
 $('chat-nav').addEventListener('click', () => { location.hash = state.thread ? `thread=${encodeURIComponent(state.thread)}` : 'chat'; route(); });
 $('torrents-nav').addEventListener('click', () => { location.hash = 'torrents'; });
+$('wiki-chat-nav').addEventListener('click', () => { if (location.hash === '#wiki-chat') route(); else location.hash = 'wiki-chat'; });
+$('wiki-nav').addEventListener('click', () => { if (location.hash === '#wiki') route(); else location.hash = 'wiki'; });
+initWiki({apiBase, api, node, toast, setTitle(title) { $('page-title').textContent = title; document.title = `${title} · Chat Media`; }});
 $('thread-search').addEventListener('input', renderThreads);
 $('refresh-threads').addEventListener('click', loadThreads);
 $('settings-open').addEventListener('click', openSettings);

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 
 from media_manager.chat_runs import ChatRuns
+from wiki.web import register_wiki
 
 
 def register_web(app, service):
@@ -21,6 +22,7 @@ def register_web(app, service):
             if origin and urlparse(origin).netloc != request.host:
                 return jsonify(error="Origem da requisição não permitida."), 403
 
+    @web.get("/wiki")
     @web.get("/torrents")
     @web.get("/")
     def index():
@@ -160,6 +162,8 @@ def register_web(app, service):
     @web.get("/api/torrents/<torrent_id>/files")
     def torrent_files(torrent_id):
         return jsonify(files=[asdict(row) for row in service.torrent_service.list_files(torrent_id)])
+
+    register_wiki(web)
 
     base = os.environ.get("BASE_PATH", os.environ.get("STREAMLIT_SERVER_BASE_URL_PATH", "chat")).strip("/")
     app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024

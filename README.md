@@ -26,6 +26,47 @@ O chat usa o Codex SDK local. As skills instaladas em `~/.codex/skills` e
 `~/.agents/skills` ficam disponíveis dentro do contêiner; o Codex pode ativá-las
 implicitamente ou por menção explícita, como `$nome-da-skill`.
 
+## Wikipédia local + Gemma
+
+Duas áreas novas na barra lateral, servidas pelo mesmo Flask:
+
+- **Wikipédia** — explorador do dump `pages-articles-multistream` guardado no SATA:
+  busca, autocompletar, artigo aleatório, leitura com links internos navegáveis,
+  infobox, sumário e o wikitexto original. Cada artigo é lido direto do `.bz2`
+  (um `seek` + a descompressão de um bloco de ~100 páginas), sem extrair o dump.
+- **Pergunte à Wiki** — chat com o `gemma3:1b` do Ollama local, com RAG por
+  gerenciamento de contexto, **sem embeddings**:
+  1. o modelo reescreve a pergunta como uma busca curta em inglês;
+  2. SQLite FTS5 (BM25 sobre título + resumo) escolhe até 3 artigos — um título
+     exato fica sozinho com todo o orçamento;
+  3. de cada artigo entram o resumo, os campos do infobox e os parágrafos com mais
+     palavras da pergunta, até `WIKI_CONTEXT_CHARS` (3500) caracteres no total;
+  4. o histórico entra cortado em `WIKI_HISTORY_CHARS` (1500) caracteres;
+  5. a resposta chega em streaming (NDJSON) citando `[1]`, `[2]`… com links para os artigos.
+
+  Dá para fixar um artigo ("Perguntar sobre este artigo") e conversar só sobre ele,
+  ou desligar a Wikipédia e conversar direto com o modelo.
+
+### Preparar um dump
+
+```bash
+mkdir -p /mnt/sata/wikipedia/simplewiki && cd /mnt/sata/wikipedia/simplewiki
+curl -LO https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles-multistream-index.txt.bz2
+curl -LO https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles-multistream.xml.bz2
+docker exec chat-media python -m wiki.build /mnt/sata/wikipedia/simplewiki   # ~2 min no Pi 5
+```
+
+Cada subpasta de `WIKI_DIR` com um dump vira uma opção na interface (`enwiki`,
+`ptwiki`…; o enwiki completo tem ~24 GB comprimidos e leva bem mais para indexar).
+O índice é escrito em `wiki.db.tmp` e só substitui `wiki.db` no fim.
+
+Variáveis: `OLLAMA_URL` (padrão `http://127.0.0.1:11434`), `WIKI_MODEL` (`gemma3:1b`),
+`WIKI_DIR` (`/mnt/sata/wikipedia`), `WIKI_CONTEXT_CHARS`, `WIKI_HISTORY_CHARS`, `WIKI_NUM_CTX` (4096).
+
+O Ollama roda em `/mnt/sata/ollama` (compose próprio, modelos no SATA, limite de 5 GB de RAM).
+No Pi 5 o `gemma3:1b` gera ~12 tokens/s e lê ~45 tokens/s de contexto: uma resposta
+com contexto leva de 20 a 50 segundos.
+
 ## API
 
 A API escuta na porta `5000` por padrão e compartilha o mesmo serviço de downloads da interface.

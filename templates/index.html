@@ -19,6 +19,8 @@
     <nav class="main-nav" aria-label="Áreas">
       <button id="chat-nav" class="nav-item active"><span aria-hidden="true">◌</span> Conversas <span class="nav-arrow">↗</span></button>
       <button id="torrents-nav" class="nav-item"><span aria-hidden="true">↓</span> Downloads</button>
+      <button id="wiki-chat-nav" class="nav-item"><span aria-hidden="true">✦</span> Pergunte à Wiki</button>
+      <button id="wiki-nav" class="nav-item"><span aria-hidden="true">W</span> Wikipédia</button>
     </nav>
     <div class="history-heading"><span>RECENTES</span><button id="refresh-threads" class="icon-button" aria-label="Atualizar conversas" title="Atualizar conversas">↻</button></div>
     <label class="search-box"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></svg><input id="thread-search" type="search" placeholder="Buscar conversa…" aria-label="Buscar conversa"></label>
@@ -64,6 +66,45 @@
       <p id="engine-notice" class="notice" hidden></p>
       <div id="download-list" class="download-list" aria-live="polite"></div>
       <details class="engine-events"><summary>Atividade do motor</summary><div id="engine-events"></div></details>
+    </section>
+    <section id="wiki-chat-view" class="chat-view wiki-chat-view" aria-label="Perguntas com Gemma e Wikipédia" hidden>
+      <div id="wiki-conversation" class="conversation" tabindex="0" aria-label="Conversa com o modelo local">
+        <div id="wiki-welcome" class="welcome">
+          <div class="welcome-label"><span class="status-dot"></span> <span id="wiki-model-label">MODELO LOCAL</span></div>
+          <h2>Pergunte.<br>A <em>Wikipédia</em> responde.</h2>
+          <p>Um Gemma pequeno rodando no próprio Pi, lendo trechos do dump local.<br>Sem internet, sem vetores: só busca e contexto bem escolhido.</p>
+          <div class="suggestions">
+            <button data-wiki-prompt="Quem foi Albert Einstein e por que ele é famoso?"><span class="suggestion-icon">✦</span><strong>Albert Einstein</strong><span>Por que ele é famoso?</span><b aria-hidden="true">↗</b></button>
+            <button data-wiki-prompt="Como funciona a fotossíntese?"><span class="suggestion-icon">❦</span><strong>Fotossíntese</strong><span>Como as plantas comem luz?</span><b aria-hidden="true">↗</b></button>
+            <button data-wiki-prompt="O que é um Raspberry Pi?"><span class="suggestion-icon">◰</span><strong>Raspberry Pi</strong><span>O computador onde isto roda.</span><b aria-hidden="true">↗</b></button>
+          </div>
+          <div class="welcome-footnote"><span>↳</span> Cada resposta mostra quais artigos entraram no contexto.</div>
+        </div>
+        <div id="wiki-messages" class="messages"></div>
+      </div>
+      <div class="composer-area">
+        <div id="wiki-run-status" class="run-status" role="status" hidden><span class="spinner"></span><span id="wiki-run-label">Preparando</span><span id="wiki-run-time">0s</span></div>
+        <div id="wiki-pinned" class="wiki-pinned" hidden><span>Perguntando sobre <strong id="wiki-pinned-title"></strong></span><button id="wiki-unpin" class="subtle-button" type="button">× Buscar em toda a Wikipédia</button></div>
+        <form id="wiki-composer" class="composer">
+          <label class="sr-only" for="wiki-prompt">Pergunta para o modelo local</label>
+          <textarea id="wiki-prompt" rows="1" maxlength="4000" placeholder="O que você quer saber?" enterkeyhint="send"></textarea>
+          <div class="composer-toolbar"><div class="composer-options"><label class="checkbox-field"><input id="wiki-use" type="checkbox" checked> Usar a Wikipédia</label><label class="model-picker"><span aria-hidden="true">W</span><select id="wiki-chat-dump" aria-label="Dump usado como contexto"></select></label><button type="button" id="wiki-clear" class="subtle-button">Limpar conversa</button></div><button id="wiki-send" class="send-button" type="submit" aria-label="Enviar pergunta" title="Enviar pergunta">↑</button><button id="wiki-stop" class="stop-button" type="button" hidden><span aria-hidden="true">■</span> Parar</button></div>
+        </form>
+        <div class="composer-hint"><span><kbd>Enter</kbd> envia <span class="hint-separator">·</span> respostas de um modelo de 1B podem errar: confira as fontes</span><span id="wiki-model-hint">Gemma local</span></div>
+      </div>
+    </section>
+    <section id="wiki-view" class="downloads-view wiki-view" aria-label="Explorar o dump da Wikipédia" hidden>
+      <div class="downloads-header"><div><span class="eyebrow">DUMP LOCAL · OFFLINE</span><h2>Wikipédia</h2><p>Navegue pelo dump multistream guardado no SATA. Cada artigo é lido direto do arquivo .bz2.</p></div><button id="wiki-random" class="primary-button">⚄ Artigo aleatório</button></div>
+      <div id="wiki-stats" class="download-stats"></div>
+      <p id="wiki-notice" class="notice" hidden></p>
+      <form id="wiki-search-form" class="download-filter wiki-search" role="search">
+        <label class="search-box"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></svg><input id="wiki-query" type="search" placeholder="Buscar artigo ou assunto…" aria-label="Buscar na Wikipédia" list="wiki-suggestions" autocomplete="off"></label>
+        <datalist id="wiki-suggestions"></datalist>
+        <label><span class="sr-only">Dump</span><select id="wiki-dump"></select></label>
+        <button class="subtle-button" type="submit">Buscar</button>
+      </form>
+      <div id="wiki-results" class="wiki-results" aria-live="polite"></div>
+      <article id="wiki-article" class="wiki-article" hidden></article>
     </section>
   </main>
   <dialog id="settings-dialog" class="dialog">
